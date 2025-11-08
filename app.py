@@ -72,6 +72,19 @@ def crear_tablas():
 
 crear_tablas()
 
+conn = get_connection()
+conn.execute(sqlalchemy.text("""
+ALTER TABLE Materias
+ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE SET NULL;
+"""))
+conn.execute(sqlalchemy.text("""
+ALTER TABLE Materias
+ADD COLUMN IF NOT EXISTS Horario VARCHAR(50);
+"""))
+conn.commit()
+conn.close()
+st.success("Columnas añadidas (si no existían).")
+
 # =========================================
 # MENÚ LATERAL
 # =========================================
@@ -375,4 +388,5 @@ elif seleccion == "Asistencias":
 
     except Exception as e:
         st.error(f"Ocurrió un error: {e}")
+
 
