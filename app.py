@@ -23,7 +23,7 @@ h1, h2, h3 {
 # =========================================
 # CONEXIÓN A LA BASE DE DATOS (Neon)
 # =========================================
-DATABASE_URL = psql 'postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
+DATABASE_URL = 'postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
 
 def get_connection():
     engine = sqlalchemy.create_engine(DATABASE_URL)
@@ -259,4 +259,5 @@ elif seleccion == "Asistencias":
 
     except Exception as e:
         st.error(f"Ocurrió un error: {e}")
+
 
