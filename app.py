@@ -55,21 +55,34 @@ def crear_tablas():
     CREATE TABLE IF NOT EXISTS Materias (
         MateriaID SERIAL PRIMARY KEY,
         Nombre VARCHAR(50),
-        Descripcion TEXT,
-        MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE SET NULL,
-        Horario VARCHAR(20)
+        Descripcion TEXT
     );
     CREATE TABLE IF NOT EXISTS Asistencias (
         AsistenciaID SERIAL PRIMARY KEY,
         Matricula INT REFERENCES Alumnos(Matricula) ON DELETE CASCADE,
-        MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE CASCADE,
         Fecha DATE,
         Estado VARCHAR(20)
     );
     """))
+
+    # Asegurar columnas en Materias
+    conn.execute(sqlalchemy.text("""
+    ALTER TABLE Materias
+    ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE SET NULL;
+    """))
+    conn.execute(sqlalchemy.text("""
+    ALTER TABLE Materias
+    ADD COLUMN IF NOT EXISTS Horario VARCHAR(50);
+    """))
+
+    # Asegurar columna en Asistencias
+    conn.execute(sqlalchemy.text("""
+    ALTER TABLE Asistencias
+    ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE CASCADE;
+    """))
+
     conn.commit()
     conn.close()
-
 crear_tablas()
 
 conn = get_connection()
@@ -388,5 +401,6 @@ elif seleccion == "Asistencias":
 
     except Exception as e:
         st.error(f"Ocurrió un error: {e}")
+
 
 
