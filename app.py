@@ -11,7 +11,7 @@ import sqlalchemy
 st.set_page_config(page_title="Control de Asistencias", layout="wide")
 
 # Conexión a la base de datos PostgreSQL (Render)
-DATABASE_URL = "postgresql://asistencia_db_c026_user:Tj2lei1PKAv1jmrAnplSMBRFldW3FHhk@dpg-d47pamshg0os73frp270-a/asistencia_db_c026"
+DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 def get_connection():
     engine = sqlalchemy.create_engine(DATABASE_URL)
@@ -224,3 +224,4 @@ if selected == "Inicio":
     st.title("🎓 Sistema de Control de Asistencias")
     st.markdown("Administra alumnos, maestros, materias y asistencias con inicio de sesión y control de roles.")
     st.image("https://cdn-icons-png.flaticon.com/512/2947/2947985.png", width=400)
+
