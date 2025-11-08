@@ -24,7 +24,7 @@ h1, h2, h3 {
 # CONEXIÓN A LA BASE DE DATOS (Neon)
 # =========================================
 # ⚠️ Sustituye esta línea con tu URL real de Neon (incluyendo ?sslmode=require)
-DATABASE_URL = 'postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
+DATABASE_URL = "postgresql://neondb_owner:TU_CONTRASEÑA@ep-xxxx.us-east-2.aws.neon.tech/neondb?sslmode=require"
 
 def get_connection():
     engine = sqlalchemy.create_engine(DATABASE_URL)
@@ -167,7 +167,8 @@ elif seleccion == "Maestros":
         st.error(f"Ocurrió un error: {e}")
 
 # =========================================
-# SECCIÓN MATERIAS (con maestro, horario, editar y eliminar)
+# =========================================
+# SECCIÓN MATERIAS (con maestro, horario, editar, eliminar y validación de choques)
 # =========================================
 elif seleccion == "Materias":
     st.header("📚 Registro de Materias")
@@ -177,7 +178,7 @@ elif seleccion == "Materias":
         maestros = pd.read_sql("SELECT MaestroID, Nombre, Apellido FROM Maestros", conn)
         materias = pd.read_sql("""
             SELECT m.MateriaID, m.Nombre, m.Descripcion, 
-                   ma.Nombre AS Maestro, m.Horario
+                   ma.Nombre AS Maestro, m.Horario, m.MaestroID
             FROM Materias m
             LEFT JOIN Maestros ma ON m.MaestroID = ma.MaestroID
             ORDER BY m.MateriaID
@@ -227,22 +228,31 @@ elif seleccion == "Materias":
                     submit_edit = st.form_submit_button("Guardar cambios")
 
                     if submit_edit:
+                        # Verificar si el maestro ya tiene ese horario ocupado
                         conn = get_connection()
-                        conn.execute(sqlalchemy.text("""
-                            UPDATE Materias
-                            SET Nombre = :nom, Descripcion = :desc, 
-                                MaestroID = :mae, Horario = :hor
-                            WHERE MateriaID = :id
-                        """), {
-                            "nom": nuevo_nombre,
-                            "desc": nueva_desc,
-                            "mae": maestro_id,
-                            "hor": horario_sel,
-                            "id": materia_id
-                        })
-                        conn.commit()
-                        conn.close()
-                        st.success("✅ Materia actualizada correctamente.")
+                        conflicto = pd.read_sql("""
+                            SELECT * FROM Materias 
+                            WHERE MaestroID = :mae AND Horario = :hor AND MateriaID != :id
+                        """, conn, params={"mae": maestro_id, "hor": horario_sel, "id": materia_id})
+                        if not conflicto.empty:
+                            st.error("⚠️ Este maestro ya tiene una clase asignada en ese horario.")
+                            conn.close()
+                        else:
+                            conn.execute(sqlalchemy.text("""
+                                UPDATE Materias
+                                SET Nombre = :nom, Descripcion = :desc, 
+                                    MaestroID = :mae, Horario = :hor
+                                WHERE MateriaID = :id
+                            """), {
+                                "nom": nuevo_nombre,
+                                "desc": nueva_desc,
+                                "mae": maestro_id,
+                                "hor": horario_sel,
+                                "id": materia_id
+                            })
+                            conn.commit()
+                            conn.close()
+                            st.success("✅ Materia actualizada correctamente.")
 
             elif accion == "Eliminar":
                 if st.button("🗑️ Eliminar materia"):
@@ -293,18 +303,25 @@ elif seleccion == "Materias":
                     st.warning("⚠️ Debes registrar al menos un maestro antes.")
                 else:
                     conn = get_connection()
-                    conn.execute(sqlalchemy.text("""
-                        INSERT INTO Materias (Nombre, Descripcion, MaestroID, Horario)
-                        VALUES (:nom, :desc, :mae, :hor)
-                    """), {
-                        "nom": nombre,
-                        "desc": descripcion,
-                        "mae": maestro_id,
-                        "hor": horario_sel
-                    })
-                    conn.commit()
-                    conn.close()
-                    st.success("✅ Materia agregada correctamente.")
+                    conflicto = pd.read_sql("""
+                        SELECT * FROM Materias WHERE MaestroID = :mae AND Horario = :hor
+                    """, conn, params={"mae": maestro_id, "hor": horario_sel})
+                    if not conflicto.empty:
+                        st.error("⚠️ Este maestro ya tiene una clase asignada en ese horario.")
+                        conn.close()
+                    else:
+                        conn.execute(sqlalchemy.text("""
+                            INSERT INTO Materias (Nombre, Descripcion, MaestroID, Horario)
+                            VALUES (:nom, :desc, :mae, :hor)
+                        """), {
+                            "nom": nombre,
+                            "desc": descripcion,
+                            "mae": maestro_id,
+                            "hor": horario_sel
+                        })
+                        conn.commit()
+                        conn.close()
+                        st.success("✅ Materia agregada correctamente.")
     except Exception as e:
         st.error(f"Ocurrió un error: {e}")
 
