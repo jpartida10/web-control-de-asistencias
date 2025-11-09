@@ -1,3 +1,4 @@
+# app_postgres.py
 import streamlit as st
 import pandas as pd
 import sqlalchemy
@@ -5,253 +6,812 @@ from sqlalchemy import text
 import datetime
 import bcrypt
 from streamlit_option_menu import option_menu
+import io
+import plotly.express as px
+import qrcode
+import base64
+from io import BytesIO
+import random
+import string
 
-# =========================================
-# CONFIGURACIÓN GENERAL
-# =========================================
-st.set_page_config(page_title="Control de Asistencias", layout="wide")
-
-# =========================================
-# CONEXIÓN A BASE DE DATOS
-# =========================================
+# =========================
+st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout="wide")
+# =========================
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+BASE_URL = st.secrets.get("BASE_URL", "https://control-asistencias.streamlit.app")
+
+# =========================
+def get_engine():
+    return sqlalchemy.create_engine(DATABASE_URL, pool_pre_ping=True)
 
 def get_connection():
-    engine = sqlalchemy.create_engine(DATABASE_URL)
+    engine = get_engine()
     return engine.connect()
 
-# =========================================
-# CREACIÓN DE TABLAS
-# =========================================
+
+# =========================
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def check_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+def mostrar_df_download(df: pd.DataFrame, filename: str, label: str = "Descargar CSV"):
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(label, data=csv, file_name=filename, mime='text/csv')
+
+def generar_token(longitud=16):
+    letras = string.ascii_letters + string.digits
+    return ''.join(random.choice(letras) for _ in range(longitud))
+
+def generar_qr_image_data(url: str):
+    qr_img = qrcode.make(url)
+    buffer = BytesIO()
+    qr_img.save(buffer, format="PNG")
+    buffer.seek(0)
+    img_bytes = buffer.getvalue()
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    return b64
+
+
+HORARIOS = [
+    "07:00 - 07:50",
+    "07:50 - 08:40",
+    "09:20 - 10:10",
+    "10:10 - 11:00",
+    "11:00 - 11:50",
+    "11:50 - 12:40",
+    "12:40 - 13:30",
+    "13:30 - 14:20",
+    "14:20 - 15:10"
+]
+
+# =========================
+# CREAR TABLAS
+# =========================
 def crear_tablas():
     conn = get_connection()
-    conn.execute(text("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        usuarioid SERIAL PRIMARY KEY,
-        nombreusuario VARCHAR(50) UNIQUE NOT NULL,
-        contrasena TEXT NOT NULL,
-        rol VARCHAR(20)
-    );
-    CREATE TABLE IF NOT EXISTS alumnos (
-        matricula SERIAL PRIMARY KEY,
-        nombre VARCHAR(50),
-        apellido VARCHAR(50)
-    );
-    CREATE TABLE IF NOT EXISTS maestros (
-        maestroid SERIAL PRIMARY KEY,
-        nombre VARCHAR(50),
-        apellido VARCHAR(50)
-    );
-    CREATE TABLE IF NOT EXISTS materias (
-        materiaid SERIAL PRIMARY KEY,
-        nombre VARCHAR(50),
-        descripcion TEXT,
-        maestroid INT REFERENCES maestros(maestroid) ON DELETE SET NULL,
-        horario VARCHAR(50)
-    );
-    CREATE TABLE IF NOT EXISTS asistencias (
-        asistenciaid SERIAL PRIMARY KEY,
-        matricula INT REFERENCES alumnos(matricula) ON DELETE CASCADE,
-        maestroid INT REFERENCES maestros(maestroid) ON DELETE CASCADE,
-        fecha DATE,
-        estado VARCHAR(20)
-    );
-    """))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            usuarioid SERIAL PRIMARY KEY,
+            nombreusuario VARCHAR(50) UNIQUE NOT NULL,
+            contrasena TEXT NOT NULL,
+            rol VARCHAR(20),
+            maestroid INT,
+            matricula INT
+        );
+        CREATE TABLE IF NOT EXISTS alumnos (
+            matricula SERIAL PRIMARY KEY,
+            nombre VARCHAR(50),
+            apellido VARCHAR(50)
+        );
+        CREATE TABLE IF NOT EXISTS maestros (
+            maestroid SERIAL PRIMARY KEY,
+            nombre VARCHAR(50),
+            apellido VARCHAR(50)
+        );
+        CREATE TABLE IF NOT EXISTS materias (
+            materiaid SERIAL PRIMARY KEY,
+            nombre VARCHAR(100),
+            descripcion TEXT,
+            maestroid INT,
+            horario VARCHAR(50)
+        );
+        CREATE TABLE IF NOT EXISTS asistencias (
+            asistenciaid SERIAL PRIMARY KEY,
+            matricula INT,
+            maestroid INT,
+            fecha DATE,
+            estado VARCHAR(20)
+        );
+        CREATE TABLE IF NOT EXISTS qr_tokens (
+            id SERIAL PRIMARY KEY,
+            token VARCHAR(50) UNIQUE NOT NULL,
+            materiaid INT,
+            maestroid INT,
+            fecha_creacion TIMESTAMP DEFAULT NOW(),
+            expiracion TIMESTAMP,
+            activo BOOLEAN DEFAULT TRUE,
+            single_use BOOLEAN DEFAULT FALSE
+        );
+        """))
 
-crear_tablas()
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS maestroid INT;"))
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS matricula INT;"))
+        conn.execute(text("ALTER TABLE materias ADD COLUMN IF NOT EXISTS maestroid INT;"))
+        conn.execute(text("ALTER TABLE materias ADD COLUMN IF NOT EXISTS horario VARCHAR(50);"))
+        conn.execute(text("ALTER TABLE asistencias ADD COLUMN IF NOT EXISTS maestroid INT;"))
+        conn.execute(text("ALTER TABLE qr_tokens ADD COLUMN IF NOT EXISTS single_use BOOLEAN DEFAULT FALSE;"))
+        conn.commit()
+    finally:
+        conn.close()
 
-# =========================================
-# SESIÓN DE USUARIO
-# =========================================
+try:
+    crear_tablas()
+except Exception as e:
+    st.error(f"Error inicializando la base de datos: {e}")
+
+# =========================
+# SESIÓN
+# =========================
 if "usuario" not in st.session_state:
-    st.session_state.usuario = None
+    st.session_state.usuario = None  
 
-# =========================================
-# LOGIN Y REGISTRO
-# =========================================
-def pantalla_login():
-    st.title("🔐 Sistema de Control de Asistencias")
+# =========================
+# MODO QR
+# =========================
+params = st.experimental_get_query_params()
+if "qr_token" in params:
+    token = params["qr_token"][0]
+    conn = get_connection()
+    qr = conn.execute(text("SELECT * FROM qr_tokens WHERE token = :t AND activo = TRUE"), {"t": token}).fetchone()
+    if not qr:
+        st.error("QR inválido o ya utilizado / inactivo.")
+        conn.close()
+        st.stop()
+    # verificar expiración
+    ahora = datetime.datetime.utcnow()
+    expir = qr["expiracion"]
+    if expir is None or expir <= ahora:
+        st.error("QR expirado.")
+        # desactivar
+        conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE token = :t"), {"t": token})
+        conn.commit()
+        conn.close()
+        st.stop()
 
-    opcion = st.radio("Selecciona una opción:", ["Iniciar sesión", "Crear cuenta"])
+    # Si el usuario ya inició sesión y es alumno, registrar asistencia automáticamente
+    if st.session_state.usuario and st.session_state.usuario.get("rol") == "alumno":
+        # verificar que usuario tenga matricula vinculada
+        matricula = st.session_state.usuario.get("matricula")
+        if not matricula:
+            st.warning("Tu cuenta de usuario no está vinculada a una matrícula. Pide al admin que vincule tu usuario.")
+            conn.close()
+            st.stop()
+        # registrar asistencia (y evitar duplicados del mismo dia para misma materia)
+        fecha_hoy = datetime.date.today()
+        # comprobar duplicado
+        dup = conn.execute(text("""
+            SELECT * FROM asistencias
+            WHERE matricula = :mat AND maestroid = :ma AND fecha = :f AND matricula IS NOT NULL
+        """), {"mat": int(matricula), "ma": int(qr["maestroid"]), "f": fecha_hoy}).fetchone()
+        if dup:
+            st.info("Tu asistencia para esta clase ya está registrada hoy.")
+        else:
+            conn.execute(text("""
+                INSERT INTO asistencias (matricula, maestroid, fecha, estado)
+                VALUES (:mat, :ma, :f, :est)
+            """), {"mat": int(matricula), "ma": int(qr["maestroid"]), "f": fecha_hoy, "est": "Presente"})
+            conn.commit()
+            st.success("✅ Asistencia registrada correctamente. Gracias.")
+        if qr["single_use"]:
+            conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE token = :t"), {"t": token})
+            conn.commit()
+        conn.close()
+        st.stop()
 
-    if opcion == "Iniciar sesión":
-        with st.form("login_form"):
-            usuario = st.text_input("Usuario")
-            contrasena = st.text_input("Contraseña", type="password")
-            enviar = st.form_submit_button("Ingresar")
-
-            if enviar:
-                conn = get_connection()
-                user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :usr"), {"usr": usuario}).fetchone()
-                conn.close()
-
-                if user and bcrypt.checkpw(contrasena.encode("utf-8"), user.contrasena.encode("utf-8")):
-                    st.session_state.usuario = {"nombre": user.nombreusuario, "rol": user.rol}
-                    st.success(f"Bienvenido {user.nombreusuario} 👋")
+    # Si no hay sesión de alumno, pedir login o registro (y al finalizar registrar)
+    st.title("🎓 Registro de Asistencia por QR")
+    st.info("Escaneaste un código QR. Ingresa con tu cuenta de alumno para registrar tu asistencia automáticamente.")
+    with st.form("login_from_qr"):
+        username = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        submit_login = st.form_submit_button("Ingresar y registrar asistencia")
+        if submit_login:
+            try:
+                user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).fetchone()
+                if user and check_password(password, user["contrasena"]):
+                    # vincular session
+                    sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
+                    if user["maestroid"]:
+                        sess["maestroid"] = int(user["maestroid"])
+                    if user["matricula"]:
+                        sess["matricula"] = int(user["matricula"])
+                    st.session_state.usuario = sess
+                    # si rol alumno, registrar asistencia
+                    if user["rol"] == "alumno" and user["matricula"]:
+                        fecha_hoy = datetime.date.today()
+                        dup = conn.execute(text("""
+                            SELECT * FROM asistencias
+                            WHERE matricula = :mat AND maestroid = :ma AND fecha = :f
+                        """), {"mat": int(user["matricula"]), "ma": int(qr["maestroid"]), "f": fecha_hoy}).fetchone()
+                        if dup:
+                            st.info("Tu asistencia para esta clase ya está registrada hoy.")
+                        else:
+                            conn.execute(text("""
+                                INSERT INTO asistencias (matricula, maestroid, fecha, estado)
+                                VALUES (:mat, :ma, :f, :est)
+                            """), {"mat": int(user["matricula"]), "ma": int(qr["maestroid"]), "f": fecha_hoy, "est": "Presente"})
+                            conn.commit()
+                            st.success("✅ Asistencia registrada correctamente.")
+                        if qr["single_use"]:
+                            conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE token = :t"), {"t": token})
+                            conn.commit()
+                    else:
+                        st.warning("Tu cuenta no es de tipo 'alumno' o no está vinculada a una matrícula.")
+                    conn.close()
                     st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos.")
+            except Exception as e:
+                st.error(f"Error al autenticar: {e}")
+    conn.close()
+    st.stop()
 
-    else:
-        with st.form("registro_form"):
-            usuario = st.text_input("Nombre de usuario")
-            contrasena = st.text_input("Contraseña", type="password")
-            rol = st.selectbox("Tipo de cuenta", ["alumno", "maestro", "admin"])
-            registrar = st.form_submit_button("Registrar")
+# =========================
+# PANTALLA LOGIN 
+# =========================
+def pantalla_login():
+    st.title("🔐 Iniciar sesión - Control de Asistencias")
+    col1, col2 = st.columns(2)
 
-            if registrar:
-                if usuario and contrasena:
-                    hashed = bcrypt.hashpw(contrasena.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    with col1:
+        st.subheader("Iniciar sesión")
+        with st.form("login_form"):
+            username = st.text_input("Usuario")
+            password = st.text_input("Contraseña", type="password")
+            submit_login = st.form_submit_button("Ingresar")
+            if submit_login:
+                try:
                     conn = get_connection()
-                    try:
-                        conn.execute(text("""
-                            INSERT INTO usuarios (nombreusuario, contrasena, rol)
-                            VALUES (:usr, :pwd, :rol)
-                        """), {"usr": usuario, "pwd": hashed, "rol": rol})
-                        conn.commit()
-                        st.success("✅ Usuario registrado correctamente.")
-                    except Exception:
-                        st.error("❌ El usuario ya existe.")
+                    user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).fetchone()
                     conn.close()
-                else:
-                    st.warning("⚠️ Todos los campos son obligatorios.")
+                    if user and check_password(password, user["contrasena"]):
+                        sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
+                        if user["maestroid"]:
+                            sess["maestroid"] = int(user["maestroid"])
+                        if user["matricula"]:
+                            sess["matricula"] = int(user["matricula"])
+                        st.session_state.usuario = sess
+                        st.success(f"Bienvenido {user['nombreusuario']}")
+                        st.rerun()
+                    else:
+                        st.error("Usuario o contraseña incorrectos.")
+                except Exception as e:
+                    st.error(f"Error al iniciar sesión: {e}")
 
-# =========================================
-# FUNCIÓN: LOGOUT
-# =========================================
+    with col2:
+        st.subheader("Crear cuenta")
+        with st.form("registro_form"):
+            new_user = st.text_input("Nombre de usuario")
+            new_pass = st.text_input("Contraseña", type="password")
+            rol = st.selectbox("Tipo de cuenta", ["alumno", "maestro", "admin"])
+            conn = get_connection()
+            maestros_df = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros ORDER BY nombre", conn)
+            alumnos_df = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos ORDER BY nombre", conn)
+            conn.close()
+
+            col_a, col_b = st.columns(2)
+            maestro_link = None
+            alumno_link = None
+            with col_a:
+                if rol == "maestro":
+                    if maestros_df.empty:
+                        st.info("No hay maestros registrados: crea el registro en la sección 'Maestros' después.")
+                    else:
+                        maestro_link = st.selectbox("Vincular a maestro existente (opcional)", ["-- Ninguno --"] + (maestros_df["nombre"] + " " + maestros_df["apellido"]).tolist())
+                        if maestro_link == "-- Ninguno --":
+                            maestro_link = None
+                elif rol == "alumno":
+                    if alumnos_df.empty:
+                        st.info("No hay alumnos registrados: crea el registro en la sección 'Alumnos' después.")
+                    else:
+                        alumno_link = st.selectbox("Vincular a alumno existente (opcional)", ["-- Ninguno --"] + (alumnos_df["nombre"] + " " + alumnos_df["apellido"]).tolist())
+                        if alumno_link == "-- Ninguno --":
+                            alumno_link = None
+
+            submit_reg = st.form_submit_button("Registrar cuenta")
+            if submit_reg:
+                if not new_user or not new_pass:
+                    st.warning("Completa todos los campos.")
+                else:
+                    try:
+                        h = hash_password(new_pass)
+                        conn = get_connection()
+                        ma_id = None
+                        mat_id = None
+                        if rol == "maestro" and maestro_link:
+                            ma_id = int(maestros_df.loc[(maestros_df["nombre"] + " " + maestros_df["apellido"]) == maestro_link, "maestroid"].iloc[0])
+                        if rol == "alumno" and alumno_link:
+                            mat_id = int(alumnos_df.loc[(alumnos_df["nombre"] + " " + alumnos_df["apellido"]) == alumno_link, "matricula"].iloc[0])
+                        conn.execute(text("""
+                            INSERT INTO usuarios (nombreusuario, contrasena, rol, maestroid, matricula)
+                            VALUES (:u, :p, :r, :ma, :ma2)
+                        """), {"u": new_user, "p": h, "r": rol, "ma": ma_id, "ma2": mat_id})
+                        conn.commit()
+                        conn.close()
+                        st.success("Usuario registrado correctamente.")
+                    except Exception as e:
+                        st.error(f"No se pudo crear el usuario: {e}")
+
+# =========================
+# LOGOUT
+# =========================
 def logout():
     st.session_state.usuario = None
     st.rerun()
 
-# =========================================
-# MENÚ LATERAL (DISEÑO Y SESIÓN)
-# =========================================
+# =========================
+# VISTAS (Admin / Maestro / Alumno)
+# =========================
+def admin_panel(conn):
+    st.header("📊 Panel Administrador")
+    try:
+        total_al = pd.read_sql("SELECT COUNT(*) as cnt FROM alumnos", conn).iloc[0]["cnt"]
+        total_ma = pd.read_sql("SELECT COUNT(*) as cnt FROM maestros", conn).iloc[0]["cnt"]
+        total_mat = pd.read_sql("SELECT COUNT(*) as cnt FROM materias", conn).iloc[0]["cnt"]
+        total_as = pd.read_sql("SELECT COUNT(*) as cnt FROM asistencias", conn).iloc[0]["cnt"]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Alumnos", total_al)
+        c2.metric("Maestros", total_ma)
+        c3.metric("Materias", total_mat)
+        c4.metric("Asistencias", total_as)
+
+        st.markdown("---")
+        df_as = pd.read_sql("SELECT estado, COUNT(*) as cnt FROM asistencias GROUP BY estado", conn)
+        if df_as.empty:
+            st.info("No hay registros de asistencias aún.")
+        else:
+            st.subheader("Asistencias por estado")
+            st.dataframe(df_as, use_container_width=True)
+            fig_bar = px.bar(df_as, x="estado", y="cnt", labels={"estado": "Estado", "cnt": "Cantidad"}, title="Asistencias por Estado")
+            st.plotly_chart(fig_bar, use_container_width=True)
+            fig_pie = px.pie(df_as, names="estado", values="cnt", title="Distribución por estado")
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.markdown("---")
+        df_time = pd.read_sql("""
+            SELECT fecha::date AS fecha, COUNT(*) AS cnt
+            FROM asistencias
+            GROUP BY fecha::date
+            ORDER BY fecha::date
+        """, conn)
+        if df_time.empty:
+            st.info("No hay datos de tendencia.")
+        else:
+            st.subheader("Tendencia de asistencias (por fecha)")
+            fig_line = px.line(df_time, x="fecha", y="cnt", markers=True, title="Asistencias por Día")
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        st.markdown("---")
+        df_mat_ma = pd.read_sql("""
+            SELECT ma.maestroid, ma.nombre || ' ' || ma.apellido AS maestro, COUNT(m.materiaid) AS cantidad
+            FROM maestros ma
+            LEFT JOIN materias m ON m.maestroid = ma.maestroid
+            GROUP BY ma.maestroid, maestro
+            ORDER BY cantidad DESC
+        """, conn)
+        if not df_mat_ma.empty:
+            st.subheader("Materias por Maestro")
+            st.dataframe(df_mat_ma, use_container_width=True)
+            fig_hbar = px.bar(df_mat_ma, x="cantidad", y="maestro", orientation="h", title="Cantidad de Materias por Maestro")
+            st.plotly_chart(fig_hbar, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Exportar datos")
+        alumnos = pd.read_sql("SELECT * FROM alumnos", conn)
+        maestros = pd.read_sql("SELECT * FROM maestros", conn)
+        materias = pd.read_sql("SELECT * FROM materias", conn)
+        asistencias = pd.read_sql("SELECT * FROM asistencias", conn)
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            mostrar_df_download(alumnos, "alumnos.csv", "📥 Descargar Alumnos")
+        with col2:
+            mostrar_df_download(maestros, "maestros.csv", "📥 Descargar Maestros")
+        with col3:
+            mostrar_df_download(materias, "materias.csv", "📥 Descargar Materias")
+        with col4:
+            mostrar_df_download(asistencias, "asistencias.csv", "📥 Descargar Asistencias")
+
+    except Exception as e:
+        st.error(f"Error panel admin: {e}")
+
+def gestion_alumnos(conn):
+    st.header("👨‍🎓 Gestión de Alumnos")
+    try:
+        alumnos = pd.read_sql("SELECT * FROM alumnos ORDER BY matricula", conn)
+        st.dataframe(alumnos, use_container_width=True)
+        with st.form("form_alumno"):
+            nombre = st.text_input("Nombre")
+            apellido = st.text_input("Apellido")
+            submit = st.form_submit_button("Guardar")
+            if submit:
+                if nombre and apellido:
+                    conn.execute(text("INSERT INTO alumnos (nombre, apellido) VALUES (:n, :a)"), {"n": nombre, "a": apellido})
+                    conn.commit()
+                    st.success("Alumno agregado.")
+                    st.rerun()
+                else:
+                    st.warning("Completa los campos.")
+        if not alumnos.empty:
+            st.subheader("Editar / Eliminar alumno")
+            sel = st.selectbox("Selecciona alumno", alumnos["nombre"] + " " + alumnos["apellido"])
+            alu_id = alumnos.loc[(alumnos["nombre"] + " " + alumnos["apellido"]) == sel, "matricula"].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
+            if accion == "Editar":
+                nuevo_nom = st.text_input("Nuevo nombre")
+                nuevo_ape = st.text_input("Nuevo apellido")
+                if st.button("Guardar cambios"):
+                    conn.execute(text("UPDATE alumnos SET nombre=:n, apellido=:a WHERE matricula=:id"), {"n": nuevo_nom, "a": nuevo_ape, "id": int(alu_id)})
+                    conn.commit()
+                    st.success("Alumno actualizado.")
+                    st.rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar alumno"):
+                    conn.execute(text("DELETE FROM alumnos WHERE matricula=:id"), {"id": int(alu_id)})
+                    conn.commit()
+                    st.warning("Alumno eliminado.")
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Error alumnos: {e}")
+
+def gestion_maestros(conn):
+    st.header("👨‍🏫 Gestión de Maestros")
+    try:
+        maestros = pd.read_sql("SELECT * FROM maestros ORDER BY maestroid", conn)
+        st.dataframe(maestros, use_container_width=True)
+        with st.form("form_maestro"):
+            nombre = st.text_input("Nombre")
+            apellido = st.text_input("Apellido")
+            submit = st.form_submit_button("Guardar")
+            if submit:
+                if nombre and apellido:
+                    conn.execute(text("INSERT INTO maestros (nombre, apellido) VALUES (:n, :a)"), {"n": nombre, "a": apellido})
+                    conn.commit()
+                    st.success("Maestro agregado.")
+                    st.rerun()
+                else:
+                    st.warning("Completa los campos.")
+        if not maestros.empty:
+            st.subheader("Editar / Eliminar maestro")
+            sel = st.selectbox("Selecciona maestro", maestros["nombre"] + " " + maestros["apellido"])
+            m_id = maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == sel, "maestroid"].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
+            if accion == "Editar":
+                nuevo_nom = st.text_input("Nuevo nombre")
+                nuevo_ape = st.text_input("Nuevo apellido")
+                if st.button("Guardar cambios maestro"):
+                    conn.execute(text("UPDATE maestros SET nombre=:n, apellido=:a WHERE maestroid=:id"), {"n": nuevo_nom, "a": nuevo_ape, "id": int(m_id)})
+                    conn.commit()
+                    st.success("Maestro actualizado.")
+                    st.rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar maestro"):
+                    conn.execute(text("DELETE FROM maestros WHERE maestroid=:id"), {"id": int(m_id)})
+                    conn.commit()
+                    st.warning("Maestro eliminado.")
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Error maestros: {e}")
+
+def gestion_materias(conn):
+    st.header("📚 Gestión de Materias")
+    try:
+        materias = pd.read_sql("""
+            SELECT m.materiaid, m.nombre, m.descripcion, m.horario,
+                   ma.maestroid, ma.nombre AS maestro_nombre, ma.apellido AS maestro_apellido
+            FROM materias m
+            LEFT JOIN maestros ma ON m.maestroid = ma.maestroid
+            ORDER BY m.materiaid
+        """, conn)
+        st.dataframe(materias, use_container_width=True)
+
+        maestros = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros ORDER BY nombre", conn)
+        st.subheader("Agregar nueva materia")
+        with st.form("form_materia"):
+            nombre = st.text_input("Nombre")
+            descripcion = st.text_area("Descripción")
+            if maestros.empty:
+                st.warning("Primero registra maestros.")
+                maestro_id = None
+            else:
+                maestro_sel = st.selectbox("Selecciona maestro", ["-- Ninguno --"] + (maestros["nombre"] + " " + maestros["apellido"]).tolist())
+                maestro_id = None
+                if maestro_sel != "-- Ninguno --":
+                    maestro_id = int(maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"].iloc[0])
+            horario_sel = st.selectbox("Horario", HORARIOS)
+            submit = st.form_submit_button("Guardar")
+            if submit:
+                if not nombre:
+                    st.warning("El nombre es obligatorio.")
+                elif maestro_id is None:
+                    st.warning("Selecciona un maestro.")
+                else:
+                    conflicto = pd.read_sql("SELECT * FROM materias WHERE maestroid = :m AND horario = :h", conn, params={"m": maestro_id, "h": horario_sel})
+                    if not conflicto.empty:
+                        st.error("⚠️ El maestro ya tiene una clase en ese horario.")
+                    else:
+                        conn.execute(text("INSERT INTO materias (nombre, descripcion, maestroid, horario) VALUES (:n, :d, :m, :h)"),
+                                     {"n": nombre, "d": descripcion, "m": maestro_id, "h": horario_sel})
+                        conn.commit()
+                        st.success("Materia agregada.")
+                        st.rerun()
+
+        if not materias.empty:
+            st.subheader("Editar / Eliminar materia")
+            sel = st.selectbox("Selecciona materia", materias["nombre"])
+            mat_id = materias.loc[materias["nombre"] == sel, "materiaid"].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
+            if accion == "Editar":
+                nuevo_nom = st.text_input("Nuevo nombre")
+                nueva_desc = st.text_area("Nueva descripción")
+                maestro_sel2 = st.selectbox("Nuevo maestro", ["-- Mantener --"] + (maestros["nombre"] + " " + maestros["apellido"]).tolist())
+                horario_new = st.selectbox("Nuevo horario", ["-- Mantener --"] + HORARIOS)
+                if st.button("Guardar cambios materia"):
+                    maestro_new_id = None
+                    if maestro_sel2 != "-- Mantener --":
+                        maestro_new_id = int(maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel2, "maestroid"].iloc[0])
+                    if maestro_new_id is not None and horario_new != "-- Mantener --":
+                        conflicto = pd.read_sql("SELECT * FROM materias WHERE maestroid = :m AND horario = :h AND materiaid != :id",
+                                                conn, params={"m": maestro_new_id, "h": horario_new, "id": int(mat_id)})
+                        if not conflicto.empty:
+                            st.error("⚠️ Conflicto de horario para el maestro seleccionado.")
+                        else:
+                            conn.execute(text("UPDATE materias SET nombre=:n, descripcion=:d, maestroid=:m, horario=:h WHERE materiaid=:id"),
+                                         {"n": nuevo_nom or sel, "d": nueva_desc or None, "m": maestro_new_id, "h": horario_new, "id": int(mat_id)})
+                            conn.commit()
+                            st.success("Materia actualizada.")
+                            st.rerun()
+                    else:
+                        update_q = "UPDATE materias SET nombre=:n, descripcion=:d {extra} WHERE materiaid=:id"
+                        extra = ""
+                        params = {"n": nuevo_nom or sel, "d": nueva_desc or None, "id": int(mat_id)}
+                        if maestro_new_id is not None:
+                            extra += ", maestroid=:m"
+                            params["m"] = maestro_new_id
+                        if horario_new != "-- Mantener --":
+                            extra += ", horario=:h"
+                            params["h"] = horario_new
+                        conn.execute(text(update_q.format(extra=extra)), params)
+                        conn.commit()
+                        st.success("Materia actualizada.")
+                        st.rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar materia"):
+                    conn.execute(text("DELETE FROM materias WHERE materiaid = :id"), {"id": int(mat_id)})
+                    conn.commit()
+                    st.warning("Materia eliminada.")
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Error materias: {e}")
+
+def gestion_asistencias(conn, maestroid_for_teacher=None, matricula_for_student=None):
+    st.header("📅 Gestión de Asistencias")
+    try:
+        asist = pd.read_sql("""
+            SELECT a.asistenciaid, a.fecha, a.estado,
+                   al.nombre AS alumno_nombre, al.apellido AS alumno_apellido,
+                   ma.nombre AS maestro_nombre, ma.apellido AS maestro_apellido
+            FROM asistencias a
+            LEFT JOIN alumnos al ON a.matricula = al.matricula
+            LEFT JOIN maestros ma ON a.maestroid = ma.maestroid
+            ORDER BY a.fecha DESC
+        """, conn)
+        st.dataframe(asist, use_container_width=True)
+
+        st.subheader("Registrar asistencia")
+        with st.form("form_asistencia_admin"):
+            alumnos = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos ORDER BY nombre", conn)
+            maestros = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros ORDER BY nombre", conn)
+            if matricula_for_student is not None:
+                alumno_sel = alumnos.loc[alumnos["matricula"] == matricula_for_student, "nombre"].iloc[0] + " " + alumnos.loc[alumnos["matricula"] == matricula_for_student, "apellido"].iloc[0]
+                st.write(f"Alumno: {alumno_sel}")
+            else:
+                alumno_sel = st.selectbox("Alumno", alumnos["nombre"] + " " + alumnos["apellido"])
+            if maestroid_for_teacher is not None:
+                maestro_sel = maestros.loc[maestros["maestroid"] == maestroid_for_teacher, "nombre"].iloc[0] + " " + maestros.loc[maestros["maestroid"] == maestroid_for_teacher, "apellido"].iloc[0]
+                st.write(f"Maestro: {maestro_sel}")
+            else:
+                maestro_sel = st.selectbox("Maestro", maestros["nombre"] + " " + maestros["apellido"])
+            estado = st.selectbox("Estado", ["Presente", "Ausente", "Retardo"])
+            fecha = st.date_input("Fecha", datetime.date.today())
+            submit = st.form_submit_button("Guardar")
+
+            if submit:
+                if matricula_for_student is not None:
+                    alumno_id = matricula_for_student
+                else:
+                    alumno_id = int(alumnos.loc[(alumnos["nombre"] + " " + alumnos["apellido"]) == alumno_sel, "matricula"].iloc[0])
+                if maestroid_for_teacher is not None:
+                    maestro_id = maestroid_for_teacher
+                else:
+                    maestro_id = int(maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"].iloc[0])
+                conn.execute(text("INSERT INTO asistencias (matricula, maestroid, fecha, estado) VALUES (:a, :m, :f, :e)"),
+                             {"a": int(alumno_id), "m": int(maestro_id), "f": fecha, "e": estado})
+                conn.commit()
+                st.success("Asistencia registrada.")
+                st.rerun()
+
+        if not asist.empty:
+            st.subheader("Eliminar registro de asistencia")
+            sel_id = st.selectbox("Selecciona ID de asistencia", asist["asistenciaid"])
+            if st.button("Eliminar asistencia"):
+                conn.execute(text("DELETE FROM asistencias WHERE asistenciaid = :id"), {"id": int(sel_id)})
+                conn.commit()
+                st.warning("Registro eliminado.")
+                st.rerun()
+
+    except Exception as e:
+        st.error(f"Error asistencias: {e}")
+
+# =========================
+# INTERFAZ PRINCIPAL
+# =========================
 if st.session_state.usuario:
     user = st.session_state.usuario
 
-    st.sidebar.markdown(
-        """
+    st.sidebar.markdown("""
         <style>
-        [data-testid="stSidebar"] {
-            background-color: #0d47a1;
-            color: white;
-            height: 100vh;
-        }
-        .css-1v3fvcr {
-            color: white !important;
-        }
+        [data-testid="stSidebar"] {height:100vh; background-color: #0d47a1;}
+        [data-testid="stSidebar"] div {color: white;}
+        .streamlit-expanderHeader {color: white;}
         </style>
-        """, unsafe_allow_html=True
-    )
+    """, unsafe_allow_html=True)
 
     with st.sidebar:
         st.image("https://cdn-icons-png.flaticon.com/512/3209/3209993.png", width=80)
-        st.markdown(f"👤 **{user['nombre']} ({user['rol']})**")
+        st.markdown(f"**{user['nombre']}**")
+        st.markdown(f"Rol: **{user['rol']}**")
         if user["rol"] == "admin":
-            opciones = ["🏠 Panel Admin", "🏫 Alumnos", "👨‍🏫 Maestros", "📚 Materias", "📅 Asistencias"]
+            opciones = ["Panel Admin", "Alumnos", "Maestros", "Materias", "Asistencias", "Tokens QR"]
         elif user["rol"] == "maestro":
-            opciones = ["📚 Mis Materias", "📅 Registrar Asistencia"]
+            opciones = ["Mis Materias", "Registrar Asistencia", "📷 Asistencia por QR", "Asistencias (mis registros)", "Tokens QR"]
         else:
-            opciones = ["📅 Mis Asistencias"]
-        seleccion = option_menu("Menú Principal", opciones, icons=["home", "people", "person-badge", "book", "calendar-check"])
+            opciones = ["Mis Asistencias"]
+        seleccion = option_menu("Menú", opciones, icons=["house", "people", "person-badge", "book", "calendar-check"], menu_icon="cast")
         st.button("Cerrar sesión", on_click=logout, use_container_width=True)
 
     conn = get_connection()
 
-    # =========================================
-    # PANEL ADMIN (solo admin)
-    # =========================================
-    if user["rol"] == "admin" and seleccion == "🏠 Panel Admin":
-        st.header("📊 Panel de Administración")
-        alumnos = pd.read_sql("SELECT COUNT(*) FROM alumnos", conn).iloc[0, 0]
-        maestros = pd.read_sql("SELECT COUNT(*) FROM maestros", conn).iloc[0, 0]
-        materias = pd.read_sql("SELECT COUNT(*) FROM materias", conn).iloc[0, 0]
-        asistencias = pd.read_sql("SELECT COUNT(*) FROM asistencias", conn).iloc[0, 0]
+    # ADMIN
+    if user["rol"] == "admin":
+        if seleccion == "Panel Admin":
+            admin_panel(conn)
+        elif seleccion == "Alumnos":
+            gestion_alumnos(conn)
+        elif seleccion == "Maestros":
+            gestion_maestros(conn)
+        elif seleccion == "Materias":
+            gestion_materias(conn)
+        elif seleccion == "Asistencias":
+            gestion_asistencias(conn)
+        elif seleccion == "Tokens QR":
+            st.header("🔑 Tokens QR (historial)")
+            df_tokens = pd.read_sql("SELECT * FROM qr_tokens ORDER BY fecha_creacion DESC LIMIT 200", conn)
+            st.dataframe(df_tokens, use_container_width=True)
+            # opción para limpiar tokens antiguos
+            if st.button("Desactivar tokens expirados"):
+                conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE expiracion <= NOW()"))
+                conn.commit()
+                st.success("Tokens expirados desactivados.")
+                st.rerun()
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Alumnos registrados", alumnos)
-        col2.metric("Maestros registrados", maestros)
-        col3.metric("Materias registradas", materias)
-        col4.metric("Asistencias totales", asistencias)
-        st.markdown("---")
-        st.info("Desde este panel, puedes navegar y administrar toda la información del sistema desde el menú lateral.")
+    # MAESTRO
+    elif user["rol"] == "maestro":
+        
+        if "maestroid" not in user:
+            try:
+                res = conn.execute(text("SELECT maestroid FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).fetchone()
+                if res and res[0]:
+                    st.session_state.usuario["maestroid"] = int(res[0])
+                    user = st.session_state.usuario
+            except Exception:
+                pass
 
-    # =========================================
-    # ADMIN: GESTIÓN DE ALUMNOS, MAESTROS, MATERIAS, ASISTENCIAS
-    # =========================================
-    if user["rol"] == "admin" and seleccion in ["🏫 Alumnos", "👨‍🏫 Maestros", "📚 Materias", "📅 Asistencias"]:
-        st.header(seleccion)
-        st.info("Desde aquí puedes agregar, editar o eliminar registros.")
-        # (Aquí va el código de gestión de las tablas igual al que ya funciona en tu versión anterior)
-        st.warning("⚠️ En esta versión resumida, las secciones de gestión conservan la misma lógica de tu app anterior.")
-
-    # =========================================
-    # MAESTRO: VER MATERIAS Y REGISTRAR ASISTENCIAS
-    # =========================================
-    if user["rol"] == "maestro":
-        if seleccion == "📚 Mis Materias":
+        if seleccion == "Mis Materias":
             st.header("📘 Mis Materias")
-            materias = pd.read_sql("""
-                SELECT m.nombre, m.descripcion, m.horario
-                FROM materias m
-                JOIN maestros ma ON m.maestroid = ma.maestroid
-                WHERE ma.nombre = :nom
-            """, conn, params={"nom": user["nombre"]})
-            if materias.empty:
-                st.info("No tienes materias asignadas aún.")
+            if "maestroid" not in user:
+                st.warning("No estás vinculado a un maestro (tu usuario). Pide al admin que vincule tu cuenta o crea el maestro y vincula tu usuario.")
             else:
-                st.dataframe(materias)
+                ma_id = user["maestroid"]
+                materias_df = pd.read_sql("SELECT nombre, descripcion, horario FROM materias WHERE maestroid = :m ORDER BY horario", conn, params={"m": ma_id})
+                if materias_df.empty:
+                    st.info("No tienes materias asignadas.")
+                else:
+                    st.dataframe(materias_df, use_container_width=True)
 
-        elif seleccion == "📅 Registrar Asistencia":
-            st.header("✍️ Registrar Asistencia")
-            alumnos = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos", conn)
-            if alumnos.empty:
-                st.warning("No hay alumnos registrados.")
+        elif seleccion == "Registrar Asistencia":
+            st.header("✍️ Registrar Asistencia (Maestro)")
+            if "maestroid" not in user:
+                st.warning("No estás vinculado a un maestro (tu usuario).")
             else:
-                with st.form("form_asistencia_maestro"):
-                    alumno_sel = st.selectbox("Alumno", alumnos["nombre"] + " " + alumnos["apellido"])
-                    estado = st.selectbox("Estado", ["Presente", "Ausente", "Retardo"])
-                    fecha = st.date_input("Fecha", datetime.date.today())
-                    guardar = st.form_submit_button("Registrar asistencia")
-                    if guardar:
-                        alumno_id = alumnos.loc[
-                            (alumnos["nombre"] + " " + alumnos["apellido"]) == alumno_sel, "matricula"
-                        ].iloc[0]
-                        maestroid = conn.execute(
-                            text("SELECT maestroid FROM maestros WHERE nombre = :nom"),
-                            {"nom": user["nombre"]}
-                        ).fetchone()[0]
+                gestion_asistencias(conn, maestroid_for_teacher=user["maestroid"])
+
+        elif seleccion == "Asistencias (mis registros)":
+            st.header("📄 Mis registros de asistencia")
+            if "maestroid" not in user:
+                st.warning("No estás vinculado a un maestro.")
+            else:
+                df = pd.read_sql("SELECT a.asistenciaid, a.fecha, a.estado, al.nombre AS alumno, al.apellido AS apellido FROM asistencias a JOIN alumnos al ON a.matricula = al.matricula WHERE a.maestroid = :m ORDER BY a.fecha DESC", conn, params={"m": user["maestroid"]})
+                if df.empty:
+                    st.info("No tienes registros aún.")
+                else:
+                    st.dataframe(df, use_container_width=True)
+                    mostrar_df_download(df, "mis_asistencias.csv", "📥 Descargar mis asistencias")
+
+        elif seleccion == "📷 Asistencia por QR":
+            st.header("📷 Generar Asistencia por Código QR")
+            if "maestroid" not in user:
+                st.warning("No estás vinculado a un maestro.")
+            else:
+                ma_id = user["maestroid"]
+                materias = pd.read_sql("SELECT materiaid, nombre, horario FROM materias WHERE maestroid = :m ORDER BY horario", conn, params={"m": ma_id})
+                if materias.empty:
+                    st.info("No tienes materias asignadas.")
+                else:
+                    materia_sel = st.selectbox("Selecciona materia", materias["nombre"])
+                    materia_id = int(materias.loc[materias["nombre"] == materia_sel, "materiaid"].iloc[0])
+                    single_use = st.checkbox("Token de un solo uso (se inactivará tras primer uso)", value=False)
+                    tiempo_min = st.number_input("Minutos de validez del QR", min_value=1, max_value=60, value=5)
+                    if st.button("Generar QR temporal"):
+                        # Crear token y guardarlo
+                        token = generar_token(16)
+                        expiracion = datetime.datetime.utcnow() + datetime.timedelta(minutes=int(tiempo_min))
                         conn.execute(text("""
-                            INSERT INTO asistencias (matricula, maestroid, fecha, estado)
-                            VALUES (:a, :m, :f, :e)
-                        """), {"a": alumno_id, "m": maestroid, "f": fecha, "e": estado})
+                            INSERT INTO qr_tokens (token, materiaid, maestroid, expiracion, activo, single_use)
+                            VALUES (:t, :mid, :maid, :exp, TRUE, :su)
+                        """), {"t": token, "mid": materia_id, "maid": ma_id, "exp": expiracion, "su": single_use})
                         conn.commit()
-                        st.success("Asistencia registrada correctamente.")
+                        # construir URL del QR
+                        qr_url = f"{BASE_URL}?qr_token={token}"
+                        b64 = generar_qr_image_data(qr_url)
+                        st.success("✅ QR generado. Escanea con el celular (o comparte el enlace).")
+                        st.image(f"data:image/png;base64,{b64}", use_column_width=False)
+                        st.markdown(f"**Enlace QR:** {qr_url}")
+                        # mostrar historial de tokens recientes del maestro
+                        st.subheader("Tokens recientes")
+                        tokens_ma = pd.read_sql("SELECT * FROM qr_tokens WHERE maestroid = :m ORDER BY fecha_creacion DESC LIMIT 20", conn, params={"m": ma_id})
+                        st.dataframe(tokens_ma, use_container_width=True)
 
-    # =========================================
-    # ALUMNO: CONSULTAR ASISTENCIAS
-    # =========================================
-    if user["rol"] == "alumno":
-        if seleccion == "📅 Mis Asistencias":
+        elif seleccion == "Tokens QR":
+            st.header("🔑 Tokens QR (mis tokens)")
+            if "maestroid" not in user:
+                st.warning("No estás vinculado a un maestro.")
+            else:
+                df_tokens = pd.read_sql("SELECT * FROM qr_tokens WHERE maestroid = :m ORDER BY fecha_creacion DESC LIMIT 200", conn, params={"m": user["maestroid"]})
+                st.dataframe(df_tokens, use_container_width=True)
+                if st.button("Desactivar tokens expirados (mis tokens)"):
+                    conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE expiracion <= NOW() AND maestroid = :m"), {"m": user["maestroid"]})
+                    conn.commit()
+                    st.success("Tokens expirados desactivados.")
+                    st.rerun()
+
+    # ALUMNO
+    elif user["rol"] == "alumno":
+        if "matricula" not in user:
+            try:
+                res = conn.execute(text("SELECT matricula FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).fetchone()
+                if res and res[0]:
+                    st.session_state.usuario["matricula"] = int(res[0])
+                    user = st.session_state.usuario
+            except Exception:
+                pass
+
+        if seleccion == "Mis Asistencias":
             st.header("📆 Mis Asistencias")
-            alumno = conn.execute(
-                text("SELECT matricula FROM alumnos WHERE nombre = :nom"),
-                {"nom": user["nombre"]}
-            ).fetchone()
-            if alumno:
-                asist = pd.read_sql("""
-                    SELECT a.fecha, a.estado, ma.nombre AS maestro
+            if "matricula" not in user:
+                st.warning("Tu usuario no está vinculado a una matrícula. Pide al admin que lo vincule.")
+            else:
+                df = pd.read_sql("""
+                    SELECT a.fecha, a.estado, ma.nombre AS maestro, ma.apellido AS maestro_apellido, m.nombre AS materia
                     FROM asistencias a
-                    JOIN maestros ma ON a.maestroid = ma.maestroid
+                    LEFT JOIN maestros ma ON a.maestroid = ma.maestroid
+                    LEFT JOIN materias m ON m.maestroid = a.maestroid
                     WHERE a.matricula = :m
                     ORDER BY a.fecha DESC
-                """, conn, params={"m": alumno[0]})
-                st.dataframe(asist)
-            else:
-                st.warning("Tu nombre no está registrado como alumno.")
+                """, conn, params={"m": user["matricula"]})
+                if df.empty:
+                    st.info("No tienes registros de asistencia.")
+                else:
+                    st.dataframe(df, use_container_width=True)
+                    total = len(df)
+                    presentes = df[df["estado"].str.lower() == "presente"].shape[0]
+                    porcentaje = round((presentes / total) * 100, 2) if total > 0 else 0.0
+                    st.metric("Porcentaje de asistencia", f"{porcentaje} %")
 
     conn.close()
+
 else:
     pantalla_login()
