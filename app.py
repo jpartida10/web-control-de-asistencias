@@ -525,12 +525,11 @@ def gestion_materias(conn):
                 elif maestro_id is None:
                     st.warning("Selecciona un maestro.")
                 else:
-                    conflicto = pd.read_sql(
-                    "SELECT * FROM materias WHERE maestroid = %s AND horario = %s",
-                    conn,
-                    params=[maestro_id, horario_sel]
-                )
-                    if not conflicto.empty:
+                    conflicto = conn.execute(
+                        text("SELECT * FROM materias WHERE maestroid = :m AND horario = :h"),
+                        {"m": maestro_id, "h": horario_sel}
+                    ).mappings().fetchall()
+                    if conflicto:
                         st.error("⚠️ El maestro ya tiene una clase en ese horario.")
                     else:
                         conn.execute(text("INSERT INTO materias (nombre, descripcion, maestroid, horario) VALUES (:n, :d, :m, :h)"),
