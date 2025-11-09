@@ -1,406 +1,365 @@
 import streamlit as st
 import pandas as pd
 import sqlalchemy
+from sqlalchemy import text
+import datetime
+import bcrypt
 from streamlit_option_menu import option_menu
 
 # =========================================
-# CONFIGURACIÓN INICIAL
+# CONFIGURACIÓN DE LA PÁGINA
 # =========================================
 st.set_page_config(page_title="Control de Asistencias", layout="wide")
 
-st.markdown("""
-<style>
-h1, h2, h3 {
-    color: #1565C0;
-    font-family: 'Segoe UI Black';
-}
-[data-testid="stSidebar"] {
-    background-color: #E3F2FD;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # =========================================
-# CONEXIÓN A LA BASE DE DATOS (Neon)
+# CONEXIÓN A LA BASE DE DATOS
 # =========================================
-# ⚠️ Sustituye esta línea con tu URL real de Neon (incluyendo ?sslmode=require)
-DATABASE_URL = 'postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
+DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 def get_connection():
     engine = sqlalchemy.create_engine(DATABASE_URL)
     return engine.connect()
 
 # =========================================
-# CREACIÓN AUTOMÁTICA DE TABLAS
+# CREACIÓN DE TABLAS
 # =========================================
 def crear_tablas():
     conn = get_connection()
-    conn.execute(sqlalchemy.text("""
-    CREATE TABLE IF NOT EXISTS Usuarios (
-        UsuarioID SERIAL PRIMARY KEY,
-        NombreUsuario VARCHAR(50) UNIQUE NOT NULL,
-        Contrasena TEXT NOT NULL,
-        Rol VARCHAR(20)
+    conn.execute(text("""
+    CREATE TABLE IF NOT EXISTS usuarios (
+        usuarioid SERIAL PRIMARY KEY,
+        nombreusuario VARCHAR(50) UNIQUE NOT NULL,
+        contrasena TEXT NOT NULL,
+        rol VARCHAR(20)
     );
-    CREATE TABLE IF NOT EXISTS Alumnos (
-        Matricula INT PRIMARY KEY,
-        Nombre VARCHAR(50),
-        Apellido VARCHAR(50)
+    CREATE TABLE IF NOT EXISTS alumnos (
+        matricula SERIAL PRIMARY KEY,
+        nombre VARCHAR(50),
+        apellido VARCHAR(50)
     );
-    CREATE TABLE IF NOT EXISTS Maestros (
-        MaestroID SERIAL PRIMARY KEY,
-        Nombre VARCHAR(50),
-        Apellido VARCHAR(50)
+    CREATE TABLE IF NOT EXISTS maestros (
+        maestroid SERIAL PRIMARY KEY,
+        nombre VARCHAR(50),
+        apellido VARCHAR(50)
     );
-    CREATE TABLE IF NOT EXISTS Materias (
-        MateriaID SERIAL PRIMARY KEY,
-        Nombre VARCHAR(50),
-        Descripcion TEXT
+    CREATE TABLE IF NOT EXISTS materias (
+        materiaid SERIAL PRIMARY KEY,
+        nombre VARCHAR(50),
+        descripcion TEXT,
+        maestroid INT REFERENCES maestros(maestroid) ON DELETE SET NULL,
+        horario VARCHAR(50)
     );
-    CREATE TABLE IF NOT EXISTS Asistencias (
-        AsistenciaID SERIAL PRIMARY KEY,
-        Matricula INT REFERENCES Alumnos(Matricula) ON DELETE CASCADE,
-        Fecha DATE,
-        Estado VARCHAR(20)
+    CREATE TABLE IF NOT EXISTS asistencias (
+        asistenciaid SERIAL PRIMARY KEY,
+        matricula INT REFERENCES alumnos(matricula) ON DELETE CASCADE,
+        maestroid INT REFERENCES maestros(maestroid) ON DELETE CASCADE,
+        fecha DATE,
+        estado VARCHAR(20)
     );
     """))
-
-    # Asegurar columnas en Materias
-    conn.execute(sqlalchemy.text("""
-    ALTER TABLE Materias
-    ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE SET NULL;
-    """))
-    conn.execute(sqlalchemy.text("""
-    ALTER TABLE Materias
-    ADD COLUMN IF NOT EXISTS Horario VARCHAR(50);
-    """))
-
-    # Asegurar columna en Asistencias
-    conn.execute(sqlalchemy.text("""
-    ALTER TABLE Asistencias
-    ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE CASCADE;
-    """))
-
     conn.commit()
     conn.close()
+
 crear_tablas()
 
-conn = get_connection()
-conn.execute(sqlalchemy.text("""
-ALTER TABLE Materias
-ADD COLUMN IF NOT EXISTS MaestroID INT REFERENCES Maestros(MaestroID) ON DELETE SET NULL;
-"""))
-conn.execute(sqlalchemy.text("""
-ALTER TABLE Materias
-ADD COLUMN IF NOT EXISTS Horario VARCHAR(50);
-"""))
-conn.commit()
-conn.close()
-st.success("Columnas añadidas (si no existían).")
+# =========================================
+# SESIÓN DE USUARIO
+# =========================================
+if "usuario" not in st.session_state:
+    st.session_state.usuario = None
 
 # =========================================
-# MENÚ LATERAL
+# LOGIN Y REGISTRO
 # =========================================
-with st.sidebar:
-    seleccion = option_menu(
-        "Menú Principal",
-        ["Inicio", "Alumnos", "Maestros", "Materias", "Asistencias"],
-        icons=["house", "people", "person-badge", "book", "check2-circle"]
+def pantalla_login():
+    st.title("🔐 Sistema de Control de Asistencias")
+
+    opcion = st.radio("Selecciona una opción:", ["Iniciar sesión", "Crear cuenta"])
+
+    if opcion == "Iniciar sesión":
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            contrasena = st.text_input("Contraseña", type="password")
+            enviar = st.form_submit_button("Ingresar")
+
+            if enviar:
+                conn = get_connection()
+                user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :usr"), {"usr": usuario}).fetchone()
+                conn.close()
+
+                if user and bcrypt.checkpw(contrasena.encode("utf-8"), user.contrasena.encode("utf-8")):
+                    st.session_state.usuario = {"nombre": user.nombreusuario, "rol": user.rol}
+                    st.success(f"Bienvenido {user.nombreusuario} 👋")
+                    st.experimental_rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+
+    else:  # Crear cuenta
+        with st.form("registro_form"):
+            usuario = st.text_input("Nombre de usuario")
+            contrasena = st.text_input("Contraseña", type="password")
+            rol = st.selectbox("Tipo de cuenta", ["alumno", "maestro", "admin"])
+            registrar = st.form_submit_button("Registrar")
+
+            if registrar:
+                if usuario and contrasena:
+                    hashed = bcrypt.hashpw(contrasena.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    conn = get_connection()
+                    try:
+                        conn.execute(text("""
+                            INSERT INTO usuarios (nombreusuario, contrasena, rol)
+                            VALUES (:usr, :pwd, :rol)
+                        """), {"usr": usuario, "pwd": hashed, "rol": rol})
+                        conn.commit()
+                        st.success("✅ Usuario registrado correctamente.")
+                    except Exception:
+                        st.error("❌ El usuario ya existe.")
+                    conn.close()
+                else:
+                    st.warning("⚠️ Todos los campos son obligatorios.")
+
+# =========================================
+# FUNCIÓN: LOGOUT
+# =========================================
+def logout():
+    st.session_state.usuario = None
+    st.experimental_rerun()
+
+# =========================================
+# INTERFAZ PRINCIPAL 
+# =========================================
+if st.session_state.usuario:
+    user = st.session_state.usuario
+
+    st.sidebar.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] {
+            background-color: #0d47a1;
+            color: white;
+        }
+        [data-testid="stSidebar"] .css-1v3fvcr {
+            color: white;
+        }
+        </style>
+        """, unsafe_allow_html=True
     )
 
-# =========================================
-# SECCIÓN INICIO
-# =========================================
-if seleccion == "Inicio":
-    st.title("📘 Sistema de Control de Asistencias")
-    st.markdown("Bienvenido al sistema. Usa el menú lateral para navegar.")
+    with st.sidebar:
+        st.image("https://cdn-icons-png.flaticon.com/512/3209/3209993.png", width=80)
+        st.markdown(f"👤 **{user['nombre']} ({user['rol']})**")
+        seleccion = option_menu(
+            "Menú Principal",
+            ["🏫 Alumnos", "👨‍🏫 Maestros", "📚 Materias", "📅 Asistencias"],
+            icons=["people", "person-badge", "book", "calendar-check"],
+            menu_icon="cast",
+            default_index=0
+        )
+        st.button("Cerrar sesión", on_click=logout, use_container_width=True)
 
-# =========================================
-# SECCIÓN ALUMNOS
-# =========================================
-elif seleccion == "Alumnos":
-    st.header("👨‍🎓 Registro de Alumnos")
+    # --- Secciones del menú ---
+    conn = get_connection()
 
-    try:
-        conn = get_connection()
-        df = pd.read_sql("SELECT * FROM Alumnos", conn)
-        conn.close()
+    # =================== ALUMNOS ===================
+    if seleccion == "🏫 Alumnos":
+        st.header("Gestión de Alumnos")
 
-        st.subheader("Lista de alumnos")
-        if df.empty:
-            st.info("No hay alumnos registrados todavía.")
-        else:
-            st.dataframe(df)
+        alumnos = pd.read_sql("SELECT * FROM alumnos ORDER BY matricula", conn)
+        st.dataframe(alumnos)
 
-        st.subheader("Agregar nuevo alumno")
         with st.form("form_alumno"):
-            matricula = st.text_input("Matrícula")
             nombre = st.text_input("Nombre")
             apellido = st.text_input("Apellido")
-            submit = st.form_submit_button("Guardar")
+            guardar = st.form_submit_button("Guardar")
 
-            if submit:
-                if matricula and nombre and apellido:
-                    conn = get_connection()
-                    conn.execute(sqlalchemy.text("""
-                        INSERT INTO Alumnos (Matricula, Nombre, Apellido)
-                        VALUES (:mat, :nom, :ape)
-                    """), {"mat": matricula, "nom": nombre, "ape": apellido})
+            if guardar:
+                if nombre and apellido:
+                    conn.execute(text("""
+                        INSERT INTO alumnos (nombre, apellido) VALUES (:n, :a)
+                    """), {"n": nombre, "a": apellido})
                     conn.commit()
-                    conn.close()
                     st.success("✅ Alumno agregado correctamente.")
+                    st.experimental_rerun()
                 else:
                     st.warning("Completa todos los campos.")
-    except Exception as e:
-        st.error(f"Ocurrió un error: {e}")
 
-# =========================================
-# SECCIÓN MAESTROS
-# =========================================
-elif seleccion == "Maestros":
-    st.header("👨‍🏫 Registro de Maestros")
+        if not alumnos.empty:
+            st.subheader("Editar o eliminar alumno")
+            alumno_sel = st.selectbox("Selecciona alumno", alumnos["nombre"] + " " + alumnos["apellido"])
+            alumno_id = alumnos.loc[
+                (alumnos["nombre"] + " " + alumnos["apellido"]) == alumno_sel, "matricula"
+            ].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
+            if accion == "Editar":
+                nuevo_nombre = st.text_input("Nuevo nombre")
+                nuevo_apellido = st.text_input("Nuevo apellido")
+                if st.button("Guardar cambios"):
+                    conn.execute(text("""
+                        UPDATE alumnos SET nombre=:n, apellido=:a WHERE matricula=:id
+                    """), {"n": nuevo_nombre, "a": nuevo_apellido, "id": alumno_id})
+                    conn.commit()
+                    st.success("Alumno actualizado.")
+                    st.experimental_rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar alumno"):
+                    conn.execute(text("DELETE FROM alumnos WHERE matricula=:id"), {"id": alumno_id})
+                    conn.commit()
+                    st.warning("Alumno eliminado.")
+                    st.experimental_rerun()
 
-    try:
-        conn = get_connection()
-        maestros = pd.read_sql("SELECT * FROM Maestros", conn)
-        conn.close()
+    # =================== MAESTROS ===================
+    elif seleccion == "👨‍🏫 Maestros":
+        st.header("Gestión de Maestros")
+        maestros = pd.read_sql("SELECT * FROM maestros ORDER BY maestroid", conn)
+        st.dataframe(maestros)
 
-        st.subheader("Lista de maestros")
-        if maestros.empty:
-            st.info("No hay maestros registrados todavía.")
-        else:
-            st.dataframe(maestros)
-
-        st.subheader("Agregar nuevo maestro")
         with st.form("form_maestro"):
             nombre = st.text_input("Nombre")
             apellido = st.text_input("Apellido")
-            submit = st.form_submit_button("Guardar")
-
-            if submit:
+            guardar = st.form_submit_button("Guardar")
+            if guardar:
                 if nombre and apellido:
-                    conn = get_connection()
-                    conn.execute(sqlalchemy.text("""
-                        INSERT INTO Maestros (Nombre, Apellido)
-                        VALUES (:nom, :ape)
-                    """), {"nom": nombre, "ape": apellido})
+                    conn.execute(text("""
+                        INSERT INTO maestros (nombre, apellido) VALUES (:n, :a)
+                    """), {"n": nombre, "a": apellido})
                     conn.commit()
-                    conn.close()
                     st.success("✅ Maestro agregado correctamente.")
+                    st.experimental_rerun()
                 else:
                     st.warning("Completa todos los campos.")
-    except Exception as e:
-        st.error(f"Ocurrió un error: {e}")
 
-# =========================================
-# =========================================
-# SECCIÓN MATERIAS (con maestro, horario, editar, eliminar y validación de choques)
-# =========================================
-elif seleccion == "Materias":
-    st.header("📚 Registro de Materias")
-
-    try:
-        conn = get_connection()
-        maestros = pd.read_sql("SELECT MaestroID, Nombre, Apellido FROM Maestros", conn)
-        materias = pd.read_sql("""
-            SELECT m.MateriaID, m.Nombre, m.Descripcion, 
-                   ma.Nombre AS Maestro, m.Horario, m.MaestroID
-            FROM Materias m
-            LEFT JOIN Maestros ma ON m.MaestroID = ma.MaestroID
-            ORDER BY m.MateriaID
-        """, conn)
-        conn.close()
-
-        st.subheader("Lista de materias registradas")
-        if materias.empty:
-            st.info("No hay materias registradas todavía.")
-        else:
-            st.dataframe(materias)
-
-            # Opciones de editar o eliminar
-            st.subheader("Editar o eliminar materia existente")
-            materia_sel = st.selectbox("Selecciona una materia", materias["Nombre"])
-            materia_id = materias.loc[materias["Nombre"] == materia_sel, "MateriaID"].iloc[0]
-
-            accion = st.radio("Acción a realizar", ["Editar", "Eliminar"])
-
+        if not maestros.empty:
+            st.subheader("Editar o eliminar maestro")
+            maestro_sel = st.selectbox("Selecciona maestro", maestros["nombre"] + " " + maestros["apellido"])
+            maestro_id = maestros.loc[
+                (maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"
+            ].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
             if accion == "Editar":
-                st.write("✏️ **Editar materia seleccionada**")
-
-                horarios = [
-                    "07:00 - 07:50",
-                    "07:50 - 08:40",
-                    "09:20 - 10:10",
-                    "10:10 - 11:00",
-                    "11:00 - 11:50",
-                    "11:50 - 12:40",
-                    "12:40 - 13:30",
-                    "13:30 - 14:20",
-                    "14:20 - 15:10"
-                ]
-
-                with st.form("form_editar_materia"):
-                    nuevo_nombre = st.text_input("Nuevo nombre", materia_sel)
-                    nueva_desc = st.text_area("Nueva descripción")
-                    horario_sel = st.selectbox("Selecciona horario", horarios)
-                    maestro_sel = st.selectbox(
-                        "Selecciona maestro",
-                        maestros["Nombre"] + " " + maestros["Apellido"]
-                    )
-                    maestro_id = maestros.loc[
-                        (maestros["Nombre"] + " " + maestros["Apellido"]) == maestro_sel,
-                        "MaestroID"
-                    ].iloc[0]
-                    submit_edit = st.form_submit_button("Guardar cambios")
-
-                    if submit_edit:
-                        # Verificar si el maestro ya tiene ese horario ocupado
-                        conn = get_connection()
-                        conflicto = pd.read_sql("""
-                            SELECT * FROM Materias 
-                            WHERE MaestroID = :mae AND Horario = :hor AND MateriaID != :id
-                        """, conn, params={"mae": maestro_id, "hor": horario_sel, "id": materia_id})
-                        if not conflicto.empty:
-                            st.error("⚠️ Este maestro ya tiene una clase asignada en ese horario.")
-                            conn.close()
-                        else:
-                            conn.execute(sqlalchemy.text("""
-                                UPDATE Materias
-                                SET Nombre = :nom, Descripcion = :desc, 
-                                    MaestroID = :mae, Horario = :hor
-                                WHERE MateriaID = :id
-                            """), {
-                                "nom": nuevo_nombre,
-                                "desc": nueva_desc,
-                                "mae": maestro_id,
-                                "hor": horario_sel,
-                                "id": materia_id
-                            })
-                            conn.commit()
-                            conn.close()
-                            st.success("✅ Materia actualizada correctamente.")
-
-            elif accion == "Eliminar":
-                if st.button("🗑️ Eliminar materia"):
-                    conn = get_connection()
-                    conn.execute(sqlalchemy.text("DELETE FROM Materias WHERE MateriaID = :id"), {"id": materia_id})
+                nuevo_nombre = st.text_input("Nuevo nombre")
+                nuevo_apellido = st.text_input("Nuevo apellido")
+                if st.button("Guardar cambios"):
+                    conn.execute(text("""
+                        UPDATE maestros SET nombre=:n, apellido=:a WHERE maestroid=:id
+                    """), {"n": nuevo_nombre, "a": nuevo_apellido, "id": maestro_id})
                     conn.commit()
-                    conn.close()
-                    st.warning("❌ Materia eliminada correctamente. Recarga la página para ver los cambios.")
+                    st.success("Maestro actualizado.")
+                    st.experimental_rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar maestro"):
+                    conn.execute(text("DELETE FROM maestros WHERE maestroid=:id"), {"id": maestro_id})
+                    conn.commit()
+                    st.warning("Maestro eliminado.")
+                    st.experimental_rerun()
 
-        st.subheader("Agregar nueva materia")
+    # =================== MATERIAS ===================
+    elif seleccion == "📚 Materias":
+        st.header("Gestión de Materias")
+        maestros = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros", conn)
+        materias = pd.read_sql("""
+            SELECT m.materiaid, m.nombre, m.descripcion, ma.nombre AS maestro, m.horario
+            FROM materias m
+            LEFT JOIN maestros ma ON m.maestroid = ma.maestroid
+        """, conn)
+        st.dataframe(materias)
 
         horarios = [
-            "07:00 - 07:50",
-            "07:50 - 08:40",
-            "09:20 - 10:10",
-            "10:10 - 11:00",
-            "11:00 - 11:50",
-            "11:50 - 12:40",
-            "12:40 - 13:30",
-            "13:30 - 14:20",
-            "14:20 - 15:10"
+            "07:00 - 07:50", "07:50 - 08:40", "09:20 - 10:10", "10:10 - 11:00",
+            "11:00 - 11:50", "11:50 - 12:40", "12:40 - 13:30", "13:30 - 14:20", "14:20 - 15:10"
         ]
 
         with st.form("form_materia"):
             nombre = st.text_input("Nombre de la materia")
             descripcion = st.text_area("Descripción")
-
-            if maestros.empty:
-                st.warning("⚠️ No hay maestros registrados todavía. Agrega uno antes de crear materias.")
-                maestro_id = None
-            else:
-                maestro_sel = st.selectbox(
-                    "Selecciona el maestro que impartirá la materia",
-                    maestros["Nombre"] + " " + maestros["Apellido"]
-                )
+            maestro_sel = st.selectbox("Maestro", maestros["nombre"] + " " + maestros["apellido"])
+            horario_sel = st.selectbox("Horario", horarios)
+            guardar = st.form_submit_button("Guardar")
+            if guardar:
                 maestro_id = maestros.loc[
-                    (maestros["Nombre"] + " " + maestros["Apellido"]) == maestro_sel,
-                    "MaestroID"
+                    (maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"
                 ].iloc[0]
-
-            horario_sel = st.selectbox("Selecciona horario", horarios)
-            submit = st.form_submit_button("Guardar")
-
-            if submit:
-                if not nombre:
-                    st.warning("⚠️ El nombre de la materia es obligatorio.")
-                elif maestro_id is None:
-                    st.warning("⚠️ Debes registrar al menos un maestro antes.")
+                conflicto = pd.read_sql("""
+                    SELECT * FROM materias WHERE maestroid=:m AND horario=:h
+                """, conn, params={"m": maestro_id, "h": horario_sel})
+                if not conflicto.empty:
+                    st.error("⚠️ El maestro ya tiene clase en ese horario.")
                 else:
-                    conn = get_connection()
-                    conflicto = pd.read_sql("""
-                        SELECT * FROM Materias WHERE MaestroID = :mae AND Horario = :hor
-                    """, conn, params={"mae": maestro_id, "hor": horario_sel})
-                    if not conflicto.empty:
-                        st.error("⚠️ Este maestro ya tiene una clase asignada en ese horario.")
-                        conn.close()
-                    else:
-                        conn.execute(sqlalchemy.text("""
-                            INSERT INTO Materias (Nombre, Descripcion, MaestroID, Horario)
-                            VALUES (:nom, :desc, :mae, :hor)
-                        """), {
-                            "nom": nombre,
-                            "desc": descripcion,
-                            "mae": maestro_id,
-                            "hor": horario_sel
-                        })
-                        conn.commit()
-                        conn.close()
-                        st.success("✅ Materia agregada correctamente.")
-    except Exception as e:
-        st.error(f"Ocurrió un error: {e}")
+                    conn.execute(text("""
+                        INSERT INTO materias (nombre, descripcion, maestroid, horario)
+                        VALUES (:n, :d, :m, :h)
+                    """), {"n": nombre, "d": descripcion, "m": maestro_id, "h": horario_sel})
+                    conn.commit()
+                    st.success("✅ Materia agregada correctamente.")
+                    st.experimental_rerun()
 
-# =========================================
-# SECCIÓN ASISTENCIAS
-# =========================================
-elif seleccion == "Asistencias":
-    st.header("📅 Registro de Asistencias")
+        if not materias.empty:
+            st.subheader("Editar o eliminar materia")
+            mat_sel = st.selectbox("Selecciona materia", materias["nombre"])
+            mat_id = materias.loc[materias["nombre"] == mat_sel, "materiaid"].iloc[0]
+            accion = st.radio("Acción", ["Editar", "Eliminar"])
+            if accion == "Editar":
+                nuevo_nombre = st.text_input("Nuevo nombre")
+                nueva_desc = st.text_area("Nueva descripción")
+                if st.button("Guardar cambios"):
+                    conn.execute(text("""
+                        UPDATE materias SET nombre=:n, descripcion=:d WHERE materiaid=:id
+                    """), {"n": nuevo_nombre, "d": nueva_desc, "id": mat_id})
+                    conn.commit()
+                    st.success("Materia actualizada.")
+                    st.experimental_rerun()
+            elif accion == "Eliminar":
+                if st.button("Eliminar materia"):
+                    conn.execute(text("DELETE FROM materias WHERE materiaid=:id"), {"id": mat_id})
+                    conn.commit()
+                    st.warning("Materia eliminada.")
+                    st.experimental_rerun()
 
-    try:
-        conn = get_connection()
-        alumnos = pd.read_sql("SELECT * FROM Alumnos", conn)
-        maestros = pd.read_sql("SELECT * FROM Maestros", conn)
-        conn.close()
-
-        if alumnos.empty or maestros.empty:
-            st.warning("⚠️ Debes registrar al menos un alumno y un maestro.")
-        else:
-            alumno_sel = st.selectbox("Selecciona Alumno", alumnos["Nombre"])
-            maestro_sel = st.selectbox("Selecciona Maestro", maestros["Nombre"])
-            estado = st.selectbox("Estado de Asistencia", ["Presente", "Ausente", "Justificado"])
-            fecha = st.date_input("Fecha")
-
-            if st.button("Registrar asistencia"):
-                mat = alumnos.loc[alumnos["Nombre"] == alumno_sel, "Matricula"].iloc[0]
-                maestroid = maestros.loc[maestros["Nombre"] == maestro_sel, "MaestroID"].iloc[0]
-                conn = get_connection()
-                conn.execute(sqlalchemy.text("""
-                    INSERT INTO Asistencias (Matricula, MaestroID, Fecha, Estado)
-                    VALUES (:mat, :mae, :fec, :est)
-                """), {"mat": mat, "mae": maestroid, "fec": fecha, "est": estado})
-                conn.commit()
-                conn.close()
-                st.success("✅ Asistencia registrada correctamente.")
-
-        st.subheader("Historial de asistencias")
-        conn = get_connection()
-        asist = pd.read_sql("""
-            SELECT a.AsistenciaID, al.Nombre AS Alumno, ma.Nombre AS Maestro, a.Fecha, a.Estado
-            FROM Asistencias a
-            JOIN Alumnos al ON a.Matricula = al.Matricula
-            JOIN Maestros ma ON a.MaestroID = ma.MaestroID
-            ORDER BY a.Fecha DESC
+    # =================== ASISTENCIAS ===================
+    elif seleccion == "📅 Asistencias":
+        st.header("Registro de Asistencias")
+        alumnos = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos", conn)
+        maestros = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros", conn)
+        asistencias = pd.read_sql("""
+            SELECT a.asistenciaid, al.nombre AS alumno, ma.nombre AS maestro, a.fecha, a.estado
+            FROM asistencias a
+            JOIN alumnos al ON a.matricula = al.matricula
+            JOIN maestros ma ON a.maestroid = ma.maestroid
+            ORDER BY a.fecha DESC
         """, conn)
-        conn.close()
+        st.dataframe(asistencias)
 
-        if asist.empty:
-            st.info("No hay asistencias registradas.")
-        else:
-            st.dataframe(asist)
+        with st.form("form_asistencia"):
+            alumno_sel = st.selectbox("Alumno", alumnos["nombre"] + " " + alumnos["apellido"])
+            maestro_sel = st.selectbox("Maestro", maestros["nombre"] + " " + maestros["apellido"])
+            estado = st.selectbox("Estado", ["Presente", "Ausente", "Retardo"])
+            fecha = st.date_input("Fecha", datetime.date.today())
+            guardar = st.form_submit_button("Guardar")
 
-    except Exception as e:
-        st.error(f"Ocurrió un error: {e}")
+            if guardar:
+                alumno_id = alumnos.loc[
+                    (alumnos["nombre"] + " " + alumnos["apellido"]) == alumno_sel, "matricula"
+                ].iloc[0]
+                maestro_id = maestros.loc[
+                    (maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"
+                ].iloc[0]
+                conn.execute(text("""
+                    INSERT INTO asistencias (matricula, maestroid, fecha, estado)
+                    VALUES (:a, :m, :f, :e)
+                """), {"a": alumno_id, "m": maestro_id, "f": fecha, "e": estado})
+                conn.commit()
+                st.success("Asistencia registrada.")
+                st.experimental_rerun()
 
+        if not asistencias.empty:
+            st.subheader("Eliminar registro de asistencia")
+            asis_sel = st.selectbox("Selecciona registro", asistencias["asistenciaid"])
+            if st.button("Eliminar asistencia"):
+                conn.execute(text("DELETE FROM asistencias WHERE asistenciaid=:id"), {"id": asis_sel})
+                conn.commit()
+                st.warning("Asistencia eliminada.")
+                st.experimental_rerun()
 
+    conn.close()
 
+else:
+    pantalla_login()
