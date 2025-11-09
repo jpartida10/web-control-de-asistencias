@@ -525,7 +525,11 @@ def gestion_materias(conn):
                 elif maestro_id is None:
                     st.warning("Selecciona un maestro.")
                 else:
-                    conflicto = pd.read_sql("SELECT * FROM materias WHERE maestroid = :m AND horario = :h", conn, params={"m": maestro_id, "h": horario_sel})
+                    conflicto = pd.read_sql(
+                    "SELECT * FROM materias WHERE maestroid = %s AND horario = %s",
+                    conn,
+                    params=[maestro_id, horario_sel]
+                )
                     if not conflicto.empty:
                         st.error("⚠️ El maestro ya tiene una clase en ese horario.")
                     else:
@@ -550,8 +554,11 @@ def gestion_materias(conn):
                     if maestro_sel2 != "-- Mantener --":
                         maestro_new_id = int(maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel2, "maestroid"].iloc[0])
                     if maestro_new_id is not None and horario_new != "-- Mantener --":
-                        conflicto = pd.read_sql("SELECT * FROM materias WHERE maestroid = :m AND horario = :h AND materiaid != :id",
-                                                conn, params={"m": maestro_new_id, "h": horario_new, "id": int(mat_id)})
+                        conflicto = pd.read_sql(
+                            "SELECT * FROM materias WHERE maestroid = %s AND horario = %s AND materiaid != %s",
+                            conn,
+                            params=[maestro_new_id, horario_new, int(mat_id)]
+                        )
                         if not conflicto.empty:
                             st.error("⚠️ Conflicto de horario para el maestro seleccionado.")
                         else:
