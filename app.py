@@ -15,11 +15,18 @@ import random
 import string
 
 # =========================
+# CONFIGURACIÓN DE PÁGINA
+# =========================
 st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout="wide")
+
+# =========================
+# CONFIG: URL de Neon y BASE_URL pública
 # =========================
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-BASE_URL = st.secrets.get("BASE_URL", "https://control-asistencias.streamlit.app")
+BASE_URL = "https://web-control-de-asistencias-6dfeqqhenqmcaisphdh4qu.streamlit.app/"
 
+# =========================
+# CONEXIÓN
 # =========================
 def get_engine():
     return sqlalchemy.create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -28,7 +35,8 @@ def get_connection():
     engine = get_engine()
     return engine.connect()
 
-
+# =========================
+# UTILIDADES
 # =========================
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -53,7 +61,7 @@ def generar_qr_image_data(url: str):
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     return b64
 
-
+# Horarios permitidos
 HORARIOS = [
     "07:00 - 07:50",
     "07:50 - 08:40",
@@ -67,7 +75,7 @@ HORARIOS = [
 ]
 
 # =========================
-# CREAR TABLAS
+# CREAR TABLAS / MIGRACIONES IDÉNTICAS
 # =========================
 def crear_tablas():
     conn = get_connection()
@@ -102,6 +110,7 @@ def crear_tablas():
             asistenciaid SERIAL PRIMARY KEY,
             matricula INT,
             maestroid INT,
+            materiaid INT,
             fecha DATE,
             estado VARCHAR(20)
         );
@@ -116,17 +125,19 @@ def crear_tablas():
             single_use BOOLEAN DEFAULT FALSE
         );
         """))
-
+        # ALTERs idempotentes
         conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS maestroid INT;"))
         conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS matricula INT;"))
         conn.execute(text("ALTER TABLE materias ADD COLUMN IF NOT EXISTS maestroid INT;"))
         conn.execute(text("ALTER TABLE materias ADD COLUMN IF NOT EXISTS horario VARCHAR(50);"))
         conn.execute(text("ALTER TABLE asistencias ADD COLUMN IF NOT EXISTS maestroid INT;"))
+        conn.execute(text("ALTER TABLE asistencias ADD COLUMN IF NOT EXISTS materiaid INT;"))
         conn.execute(text("ALTER TABLE qr_tokens ADD COLUMN IF NOT EXISTS single_use BOOLEAN DEFAULT FALSE;"))
         conn.commit()
     finally:
         conn.close()
 
+# Inicializar tablas
 try:
     crear_tablas()
 except Exception as e:
@@ -136,62 +147,58 @@ except Exception as e:
 # SESIÓN
 # =========================
 if "usuario" not in st.session_state:
-    st.session_state.usuario = None  
+    st.session_state.usuario = None
 
 # =========================
-# MODO QR
+# MODO QR: si llega ?qr_token=...
 # =========================
 params = st.experimental_get_query_params()
 if "qr_token" in params:
     token = params["qr_token"][0]
     conn = get_connection()
-    qr = conn.execute(text("SELECT * FROM qr_tokens WHERE token = :t AND activo = TRUE"), {"t": token}).fetchone()
+    qr = conn.execute(text("SELECT * FROM qr_tokens WHERE token = :t AND activo = TRUE"), {"t": token}).mappings().fetchone()
     if not qr:
         st.error("QR inválido o ya utilizado / inactivo.")
         conn.close()
         st.stop()
-    # verificar expiración
+    # verificar expiración (usar UTC)
     ahora = datetime.datetime.utcnow()
     expir = qr["expiracion"]
     if expir is None or expir <= ahora:
         st.error("QR expirado.")
-        # desactivar
         conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE token = :t"), {"t": token})
         conn.commit()
         conn.close()
         st.stop()
 
-    # Si el usuario ya inició sesión y es alumno, registrar asistencia automáticamente
+    # Si hay sesión y es alumno -> registro automático
     if st.session_state.usuario and st.session_state.usuario.get("rol") == "alumno":
-        # verificar que usuario tenga matricula vinculada
         matricula = st.session_state.usuario.get("matricula")
         if not matricula:
-            st.warning("Tu cuenta de usuario no está vinculada a una matrícula. Pide al admin que vincule tu usuario.")
+            st.warning("Tu cuenta no está vinculada a una matrícula. Pide al admin que la vincule.")
             conn.close()
             st.stop()
-        # registrar asistencia (y evitar duplicados del mismo dia para misma materia)
         fecha_hoy = datetime.date.today()
-        # comprobar duplicado
         dup = conn.execute(text("""
             SELECT * FROM asistencias
-            WHERE matricula = :mat AND maestroid = :ma AND fecha = :f AND matricula IS NOT NULL
-        """), {"mat": int(matricula), "ma": int(qr["maestroid"]), "f": fecha_hoy}).fetchone()
+            WHERE matricula = :mat AND materiaid = :mid AND fecha = :f
+        """), {"mat": int(matricula), "mid": int(qr["materiaid"]), "f": fecha_hoy}).mappings().fetchone()
         if dup:
-            st.info("Tu asistencia para esta clase ya está registrada hoy.")
+            st.info("Tu asistencia para esta materia ya está registrada hoy.")
         else:
             conn.execute(text("""
-                INSERT INTO asistencias (matricula, maestroid, fecha, estado)
-                VALUES (:mat, :ma, :f, :est)
-            """), {"mat": int(matricula), "ma": int(qr["maestroid"]), "f": fecha_hoy, "est": "Presente"})
+                INSERT INTO asistencias (matricula, maestroid, materiaid, fecha, estado)
+                VALUES (:mat, :ma, :materia, :f, :est)
+            """), {"mat": int(matricula), "ma": int(qr["maestroid"]), "materia": int(qr["materiaid"]), "f": fecha_hoy, "est": "Presente"})
             conn.commit()
-            st.success("✅ Asistencia registrada correctamente. Gracias.")
+            st.success("✅ Asistencia registrada correctamente.")
         if qr["single_use"]:
             conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE token = :t"), {"t": token})
             conn.commit()
         conn.close()
         st.stop()
 
-    # Si no hay sesión de alumno, pedir login o registro (y al finalizar registrar)
+    # Si no hay sesión de alumno -> pedir login y registrar tras autenticación
     st.title("🎓 Registro de Asistencia por QR")
     st.info("Escaneaste un código QR. Ingresa con tu cuenta de alumno para registrar tu asistencia automáticamente.")
     with st.form("login_from_qr"):
@@ -200,29 +207,28 @@ if "qr_token" in params:
         submit_login = st.form_submit_button("Ingresar y registrar asistencia")
         if submit_login:
             try:
-                user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).fetchone()
+                user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).mappings().fetchone()
                 if user and check_password(password, user["contrasena"]):
-                    # vincular session
                     sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
                     if user["maestroid"]:
                         sess["maestroid"] = int(user["maestroid"])
                     if user["matricula"]:
                         sess["matricula"] = int(user["matricula"])
                     st.session_state.usuario = sess
-                    # si rol alumno, registrar asistencia
+                    # registrar si es alumno
                     if user["rol"] == "alumno" and user["matricula"]:
                         fecha_hoy = datetime.date.today()
-                        dup = conn.execute(text("""
+                        dup2 = conn.execute(text("""
                             SELECT * FROM asistencias
-                            WHERE matricula = :mat AND maestroid = :ma AND fecha = :f
-                        """), {"mat": int(user["matricula"]), "ma": int(qr["maestroid"]), "f": fecha_hoy}).fetchone()
-                        if dup:
-                            st.info("Tu asistencia para esta clase ya está registrada hoy.")
+                            WHERE matricula = :mat AND materiaid = :mid AND fecha = :f
+                        """), {"mat": int(user["matricula"]), "mid": int(qr["materiaid"]), "f": fecha_hoy}).mappings().fetchone()
+                        if dup2:
+                            st.info("Tu asistencia para esta materia ya está registrada hoy.")
                         else:
                             conn.execute(text("""
-                                INSERT INTO asistencias (matricula, maestroid, fecha, estado)
-                                VALUES (:mat, :ma, :f, :est)
-                            """), {"mat": int(user["matricula"]), "ma": int(qr["maestroid"]), "f": fecha_hoy, "est": "Presente"})
+                                INSERT INTO asistencias (matricula, maestroid, materiaid, fecha, estado)
+                                VALUES (:mat, :ma, :materia, :f, :est)
+                            """), {"mat": int(user["matricula"]), "ma": int(qr["maestroid"]), "materia": int(qr["materiaid"]), "f": fecha_hoy, "est": "Presente"})
                             conn.commit()
                             st.success("✅ Asistencia registrada correctamente.")
                         if qr["single_use"]:
@@ -240,7 +246,7 @@ if "qr_token" in params:
     st.stop()
 
 # =========================
-# PANTALLA LOGIN 
+# PANTALLA LOGIN / REGISTRO NORMAL
 # =========================
 def pantalla_login():
     st.title("🔐 Iniciar sesión - Control de Asistencias")
@@ -255,7 +261,7 @@ def pantalla_login():
             if submit_login:
                 try:
                     conn = get_connection()
-                    user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).fetchone()
+                    user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).mappings().fetchone()
                     conn.close()
                     if user and check_password(password, user["contrasena"]):
                         sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
@@ -333,7 +339,7 @@ def logout():
     st.rerun()
 
 # =========================
-# VISTAS (Admin / Maestro / Alumno)
+# VISTAS / FUNCIONES DE GESTIÓN
 # =========================
 def admin_panel(conn):
     st.header("📊 Panel Administrador")
@@ -583,10 +589,12 @@ def gestion_asistencias(conn, maestroid_for_teacher=None, matricula_for_student=
         asist = pd.read_sql("""
             SELECT a.asistenciaid, a.fecha, a.estado,
                    al.nombre AS alumno_nombre, al.apellido AS alumno_apellido,
-                   ma.nombre AS maestro_nombre, ma.apellido AS maestro_apellido
+                   ma.nombre AS maestro_nombre, ma.apellido AS maestro_apellido,
+                   m.nombre AS materia_nombre
             FROM asistencias a
             LEFT JOIN alumnos al ON a.matricula = al.matricula
             LEFT JOIN maestros ma ON a.maestroid = ma.maestroid
+            LEFT JOIN materias m ON a.materiaid = m.materiaid
             ORDER BY a.fecha DESC
         """, conn)
         st.dataframe(asist, use_container_width=True)
@@ -595,16 +603,21 @@ def gestion_asistencias(conn, maestroid_for_teacher=None, matricula_for_student=
         with st.form("form_asistencia_admin"):
             alumnos = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos ORDER BY nombre", conn)
             maestros = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros ORDER BY nombre", conn)
+            materias = pd.read_sql("SELECT materiaid, nombre FROM materias ORDER BY nombre", conn)
+
             if matricula_for_student is not None:
                 alumno_sel = alumnos.loc[alumnos["matricula"] == matricula_for_student, "nombre"].iloc[0] + " " + alumnos.loc[alumnos["matricula"] == matricula_for_student, "apellido"].iloc[0]
                 st.write(f"Alumno: {alumno_sel}")
             else:
                 alumno_sel = st.selectbox("Alumno", alumnos["nombre"] + " " + alumnos["apellido"])
+
             if maestroid_for_teacher is not None:
                 maestro_sel = maestros.loc[maestros["maestroid"] == maestroid_for_teacher, "nombre"].iloc[0] + " " + maestros.loc[maestros["maestroid"] == maestroid_for_teacher, "apellido"].iloc[0]
                 st.write(f"Maestro: {maestro_sel}")
             else:
                 maestro_sel = st.selectbox("Maestro", maestros["nombre"] + " " + maestros["apellido"])
+
+            materia_sel = st.selectbox("Materia", ["-- Seleccionar --"] + materias["nombre"].tolist())
             estado = st.selectbox("Estado", ["Presente", "Ausente", "Retardo"])
             fecha = st.date_input("Fecha", datetime.date.today())
             submit = st.form_submit_button("Guardar")
@@ -618,11 +631,15 @@ def gestion_asistencias(conn, maestroid_for_teacher=None, matricula_for_student=
                     maestro_id = maestroid_for_teacher
                 else:
                     maestro_id = int(maestros.loc[(maestros["nombre"] + " " + maestros["apellido"]) == maestro_sel, "maestroid"].iloc[0])
-                conn.execute(text("INSERT INTO asistencias (matricula, maestroid, fecha, estado) VALUES (:a, :m, :f, :e)"),
-                             {"a": int(alumno_id), "m": int(maestro_id), "f": fecha, "e": estado})
-                conn.commit()
-                st.success("Asistencia registrada.")
-                st.rerun()
+                if materia_sel == "-- Seleccionar --":
+                    st.warning("Selecciona una materia.")
+                else:
+                    materia_id = int(materias.loc[materias["nombre"] == materia_sel, "materiaid"].iloc[0])
+                    conn.execute(text("INSERT INTO asistencias (matricula, maestroid, materiaid, fecha, estado) VALUES (:a, :m, :matid, :f, :e)"),
+                                 {"a": int(alumno_id), "m": int(maestro_id), "matid": int(materia_id), "f": fecha, "e": estado})
+                    conn.commit()
+                    st.success("Asistencia registrada.")
+                    st.rerun()
 
         if not asist.empty:
             st.subheader("Eliminar registro de asistencia")
@@ -642,6 +659,7 @@ def gestion_asistencias(conn, maestroid_for_teacher=None, matricula_for_student=
 if st.session_state.usuario:
     user = st.session_state.usuario
 
+    # Sidebar styling
     st.sidebar.markdown("""
         <style>
         [data-testid="stSidebar"] {height:100vh; background-color: #0d47a1;}
@@ -681,7 +699,6 @@ if st.session_state.usuario:
             st.header("🔑 Tokens QR (historial)")
             df_tokens = pd.read_sql("SELECT * FROM qr_tokens ORDER BY fecha_creacion DESC LIMIT 200", conn)
             st.dataframe(df_tokens, use_container_width=True)
-            # opción para limpiar tokens antiguos
             if st.button("Desactivar tokens expirados"):
                 conn.execute(text("UPDATE qr_tokens SET activo = FALSE WHERE expiracion <= NOW()"))
                 conn.commit()
@@ -690,12 +707,12 @@ if st.session_state.usuario:
 
     # MAESTRO
     elif user["rol"] == "maestro":
-        
+        # asegurar maestroid en session si no existe
         if "maestroid" not in user:
             try:
-                res = conn.execute(text("SELECT maestroid FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).fetchone()
-                if res and res[0]:
-                    st.session_state.usuario["maestroid"] = int(res[0])
+                res = conn.execute(text("SELECT maestroid FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).mappings().fetchone()
+                if res and res["maestroid"]:
+                    st.session_state.usuario["maestroid"] = int(res["maestroid"])
                     user = st.session_state.usuario
             except Exception:
                 pass
@@ -724,7 +741,14 @@ if st.session_state.usuario:
             if "maestroid" not in user:
                 st.warning("No estás vinculado a un maestro.")
             else:
-                df = pd.read_sql("SELECT a.asistenciaid, a.fecha, a.estado, al.nombre AS alumno, al.apellido AS apellido FROM asistencias a JOIN alumnos al ON a.matricula = al.matricula WHERE a.maestroid = :m ORDER BY a.fecha DESC", conn, params={"m": user["maestroid"]})
+                df = pd.read_sql("""
+                    SELECT a.asistenciaid, a.fecha, a.estado, al.nombre AS alumno, al.apellido AS apellido, m.nombre AS materia
+                    FROM asistencias a
+                    JOIN alumnos al ON a.matricula = al.matricula
+                    LEFT JOIN materias m ON a.materiaid = m.materiaid
+                    WHERE a.maestroid = :m
+                    ORDER BY a.fecha DESC
+                """, conn, params={"m": user["maestroid"]})
                 if df.empty:
                     st.info("No tienes registros aún.")
                 else:
@@ -746,7 +770,6 @@ if st.session_state.usuario:
                     single_use = st.checkbox("Token de un solo uso (se inactivará tras primer uso)", value=False)
                     tiempo_min = st.number_input("Minutos de validez del QR", min_value=1, max_value=60, value=5)
                     if st.button("Generar QR temporal"):
-                        # Crear token y guardarlo
                         token = generar_token(16)
                         expiracion = datetime.datetime.utcnow() + datetime.timedelta(minutes=int(tiempo_min))
                         conn.execute(text("""
@@ -754,15 +777,13 @@ if st.session_state.usuario:
                             VALUES (:t, :mid, :maid, :exp, TRUE, :su)
                         """), {"t": token, "mid": materia_id, "maid": ma_id, "exp": expiracion, "su": single_use})
                         conn.commit()
-                        # construir URL del QR
                         qr_url = f"{BASE_URL}?qr_token={token}"
                         b64 = generar_qr_image_data(qr_url)
-                        st.success("✅ QR generado. Escanea con el celular (o comparte el enlace).")
-                        st.image(f"data:image/png;base64,{b64}", use_column_width=False)
+                        st.success(f"✅ QR generado para **{materia_sel}**. Escanea con el celular (o comparte el enlace).")
+                        st.image(f"data:image/png;base64,{b64}")
                         st.markdown(f"**Enlace QR:** {qr_url}")
-                        # mostrar historial de tokens recientes del maestro
-                        st.subheader("Tokens recientes")
                         tokens_ma = pd.read_sql("SELECT * FROM qr_tokens WHERE maestroid = :m ORDER BY fecha_creacion DESC LIMIT 20", conn, params={"m": ma_id})
+                        st.subheader("Tokens recientes")
                         st.dataframe(tokens_ma, use_container_width=True)
 
         elif seleccion == "Tokens QR":
@@ -782,9 +803,9 @@ if st.session_state.usuario:
     elif user["rol"] == "alumno":
         if "matricula" not in user:
             try:
-                res = conn.execute(text("SELECT matricula FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).fetchone()
-                if res and res[0]:
-                    st.session_state.usuario["matricula"] = int(res[0])
+                res = conn.execute(text("SELECT matricula FROM usuarios WHERE nombreusuario = :u"), {"u": user["nombre"]}).mappings().fetchone()
+                if res and res["matricula"]:
+                    st.session_state.usuario["matricula"] = int(res["matricula"])
                     user = st.session_state.usuario
             except Exception:
                 pass
@@ -798,7 +819,7 @@ if st.session_state.usuario:
                     SELECT a.fecha, a.estado, ma.nombre AS maestro, ma.apellido AS maestro_apellido, m.nombre AS materia
                     FROM asistencias a
                     LEFT JOIN maestros ma ON a.maestroid = ma.maestroid
-                    LEFT JOIN materias m ON m.maestroid = a.maestroid
+                    LEFT JOIN materias m ON a.materiaid = m.materiaid
                     WHERE a.matricula = :m
                     ORDER BY a.fecha DESC
                 """, conn, params={"m": user["matricula"]})
