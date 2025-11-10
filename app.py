@@ -1,4 +1,3 @@
-# app_postgres.py
 import streamlit as st
 import pandas as pd
 import sqlalchemy
@@ -14,20 +13,15 @@ from io import BytesIO
 import random
 import string
 
-# =========================
-# CONFIGURACIÓN DE PÁGINA
-# =========================
+
 st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout="wide")
 
-# =========================
-# CONFIG: URL de Neon y BASE_URL pública
-# =========================
+
+# URL de la bd
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 BASE_URL = "https://web-control-de-asistencias-6dfeqqhenqmcaisphdh4qu.streamlit.app/"
 
-# =========================
-# CONEXIÓN
-# =========================
+#Conexion
 def get_engine():
     return sqlalchemy.create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -35,8 +29,6 @@ def get_connection():
     engine = get_engine()
     return engine.connect()
 
-# =========================
-# UTILIDADES
 # =========================
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -74,9 +66,9 @@ HORARIOS = [
     "14:20 - 15:10"
 ]
 
-# =========================
-# CREAR TABLAS / MIGRACIONES IDÉNTICAS
-# =========================
+
+
+# CREAR TABLAS 
 def crear_tablas():
     conn = get_connection()
     try:
@@ -143,15 +135,13 @@ try:
 except Exception as e:
     st.error(f"Error inicializando la base de datos: {e}")
 
-# =========================
+
 # SESIÓN
-# =========================
 if "usuario" not in st.session_state:
     st.session_state.usuario = None
 
-# =========================
-# MODO QR: si llega ?qr_token=...
-# =========================
+
+# QR
 params = st.experimental_get_query_params()
 if "qr_token" in params:
     token = params["qr_token"][0]
@@ -161,7 +151,7 @@ if "qr_token" in params:
         st.error("QR inválido o ya utilizado / inactivo.")
         conn.close()
         st.stop()
-    # verificar expiración (usar UTC)
+    # verificar expiración
     ahora = datetime.datetime.utcnow()
     expir = qr["expiracion"]
     if expir is None or expir <= ahora:
@@ -245,9 +235,8 @@ if "qr_token" in params:
     conn.close()
     st.stop()
 
-# =========================
-# PANTALLA LOGIN / REGISTRO NORMAL
-# =========================
+
+# PANTALLA LOGIN 
 def pantalla_login():
     st.title("🔐 Iniciar sesión - Control de Asistencias")
     col1, col2 = st.columns(2)
@@ -331,16 +320,14 @@ def pantalla_login():
                     except Exception as e:
                         st.error(f"No se pudo crear el usuario: {e}")
 
-# =========================
+
 # LOGOUT
-# =========================
 def logout():
     st.session_state.usuario = None
     st.rerun()
 
-# =========================
+
 # VISTAS / FUNCIONES DE GESTIÓN
-# =========================
 def admin_panel(conn):
     st.header("📊 Panel Administrador")
     try:
@@ -842,3 +829,4 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
