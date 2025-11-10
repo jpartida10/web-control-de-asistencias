@@ -1,3 +1,4 @@
+# app_postgres.py
 import streamlit as st
 import pandas as pd
 import sqlalchemy
@@ -13,15 +14,20 @@ from io import BytesIO
 import random
 import string
 
-
+# =========================
+# CONFIGURACIÓN DE PÁGINA
+# =========================
 st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout="wide")
 
-
-# URL de la bd
+# =========================
+# CONFIG: URL de Neon y BASE_URL pública
+# =========================
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 BASE_URL = "https://web-control-de-asistencias-6dfeqqhenqmcaisphdh4qu.streamlit.app/"
 
-#Conexion
+# =========================
+# CONEXIÓN
+# =========================
 def get_engine():
     return sqlalchemy.create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -29,6 +35,8 @@ def get_connection():
     engine = get_engine()
     return engine.connect()
 
+# =========================
+# UTILIDADES
 # =========================
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -66,9 +74,9 @@ HORARIOS = [
     "14:20 - 15:10"
 ]
 
-
-
-# CREAR TABLAS 
+# =========================
+# CREAR TABLAS / MIGRACIONES IDÉNTICAS
+# =========================
 def crear_tablas():
     conn = get_connection()
     try:
@@ -135,13 +143,15 @@ try:
 except Exception as e:
     st.error(f"Error inicializando la base de datos: {e}")
 
-
+# =========================
 # SESIÓN
+# =========================
 if "usuario" not in st.session_state:
     st.session_state.usuario = None
 
-
-# QR
+# =========================
+# MODO QR: si llega ?qr_token=...
+# =========================
 params = st.experimental_get_query_params()
 if "qr_token" in params:
     token = params["qr_token"][0]
@@ -151,7 +161,7 @@ if "qr_token" in params:
         st.error("QR inválido o ya utilizado / inactivo.")
         conn.close()
         st.stop()
-    # verificar expiración
+    # verificar expiración (usar UTC)
     ahora = datetime.datetime.utcnow()
     expir = qr["expiracion"]
     if expir is None or expir <= ahora:
@@ -235,8 +245,9 @@ if "qr_token" in params:
     conn.close()
     st.stop()
 
-
-# PANTALLA LOGIN 
+# =========================
+# PANTALLA LOGIN / REGISTRO NORMAL
+# =========================
 def pantalla_login():
     st.title("🔐 Iniciar sesión - Control de Asistencias")
     col1, col2 = st.columns(2)
@@ -320,14 +331,16 @@ def pantalla_login():
                     except Exception as e:
                         st.error(f"No se pudo crear el usuario: {e}")
 
-
+# =========================
 # LOGOUT
+# =========================
 def logout():
     st.session_state.usuario = None
     st.rerun()
 
-
+# =========================
 # VISTAS / FUNCIONES DE GESTIÓN
+# =========================
 def admin_panel(conn):
     st.header("📊 Panel Administrador")
     try:
@@ -804,29 +817,37 @@ if st.session_state.usuario:
                 pass
 
         if seleccion == "Mis Asistencias":
+            # 📆 Mis Asistencias
             st.header("📆 Mis Asistencias")
-            if "matricula" not in user:
-                st.warning("Tu usuario no está vinculado a una matrícula. Pide al admin que lo vincule.")
-            else:
-                df = pd.read_sql("""
-                    SELECT a.fecha, a.estado, ma.nombre AS maestro, ma.apellido AS maestro_apellido, m.nombre AS materia
+
+            try:
+                # Usa text() para que SQLAlchemy maneje bien los parámetros
+                query = text("""
+                    SELECT a.fecha,
+                           a.estado,
+                           ma.nombre AS maestro,
+                           ma.apellido AS maestro_apellido,
+                           m.nombre AS materia
                     FROM asistencias a
-                    LEFT JOIN maestros ma ON a.maestroid = ma.maestroid
-                    LEFT JOIN materias m ON a.materiaid = m.materiaid
-                    WHERE a.matricula = :m
+                    JOIN maestros ma ON a.maestroid = ma.maestroid
+                    JOIN materias m ON a.materiaid = m.materiaid
+                    WHERE a.matricula = :mat
                     ORDER BY a.fecha DESC
-                """, conn, params={"m": user["matricula"]})
-                if df.empty:
-                    st.info("No tienes registros de asistencia.")
-                else:
+                """)
+
+                # Ejecutar con parámetros correctamente usando conn.execute()
+                result = conn.execute(query, {"mat": user["matricula"]}).mappings().all()
+
+                if result:
+                    df = pd.DataFrame(result)
                     st.dataframe(df, use_container_width=True)
-                    total = len(df)
-                    presentes = df[df["estado"].str.lower() == "presente"].shape[0]
-                    porcentaje = round((presentes / total) * 100, 2) if total > 0 else 0.0
-                    st.metric("Porcentaje de asistencia", f"{porcentaje} %")
+                else:
+                    st.info("No se han registrado asistencias aún.")
+
+            except Exception as e:
+                st.error(f"Ocurrió un error al cargar tus asistencias: {e}")
 
     conn.close()
 
 else:
     pantalla_login()
-
