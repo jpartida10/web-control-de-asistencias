@@ -1,8 +1,11 @@
 streamlit
-pandas
 sqlalchemy
 psycopg2-binary
 bcrypt
-streamlit-option-menu
+pandas
 plotly
+streamlit-option-menu
 qrcode
+Pillow
+requests
+numpy
