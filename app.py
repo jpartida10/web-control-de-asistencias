@@ -262,54 +262,99 @@ if "qr_token" in params:
 # =========================
 def pantalla_login():
 
-    # ==== Estilos modernos (glass + centrar) ====
+    # ===== ESTILOS DE DISEÑO PROFESIONAL =====
     st.markdown("""
         <style>
-        body {
-            background: linear-gradient(135deg, #1a237e, #0d47a1);
+
+        /* Fondo completo */
+        .main {
+            background: linear-gradient(135deg, #0d47a1 0%, #1976d2 50%, #42a5f5 100%);
+            height: 100vh !important;
         }
-        .login-container {
-            margin: auto;
+
+        /* Centrado total */
+        .center-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 95vh;
+        }
+
+        /* Tarjeta glass */
+        .glass-card {
             width: 420px;
-            padding: 30px;
-            margin-top: 80px;
+            padding: 35px;
             border-radius: 18px;
-            background: rgba(255,255,255,0.15);
-            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.15);
             box-shadow: 0 8px 25px rgba(0,0,0,0.3);
-        }
-        .login-title {
-            text-align: center;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
             color: white;
-            font-size: 30px;
-            font-weight: 800;
         }
-        .login-subtitle {
+
+        .title {
             text-align: center;
-            color: #e0e0e0;
+            font-size: 32px;
+            font-weight: 900;
+            margin-bottom: -5px;
+        }
+
+        .subtitle {
+            text-align: center;
             font-size: 14px;
-            margin-top: -10px;
+            color: #e3f2fd;
         }
-        .input-label {
+
+        .stTextInput label, .stSelectbox label {
             color: white !important;
-            font-weight: 600;
+            font-weight: bold;
         }
+
+        .stButton>button {
+            width: 100%;
+            background-color: #1e88e5;
+            color: white;
+            font-weight: bold;
+            border-radius: 8px;
+            height: 45px;
+            border: none;
+        }
+
+        .stButton>button:hover {
+            background-color: #1565c0;
+            color: white;
+        }
+
+        .divider {
+            height: 1px;
+            background-color: rgba(255, 255, 255, 0.3);
+            margin: 25px 0;
+        }
+
         </style>
     """, unsafe_allow_html=True)
 
-    # === Contenedor glass ===
-    st.markdown('<div class="login-container">', unsafe_allow_html=True)
-    st.markdown('<p class="login-title">🔐 Sistema de Asistencias</p>', unsafe_allow_html=True)
-    st.markdown('<p class="login-subtitle">Ingresa para continuar</p>', unsafe_allow_html=True)
+    # ===== CONTENEDOR CENTRADO =====
+    st.markdown('<div class="center-container">', unsafe_allow_html=True)
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
-    # ==== LOGIN ====
-    st.markdown("### Iniciar Sesión")
-    with st.form("login_form"):
+    # ===== TÍTULO =====
+    st.markdown('<p class="title">🔐 Control de Asistencias</p>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Ingresa a tu cuenta para continuar</p>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ============================
+    # FORMULARIO DE LOGIN
+    # ============================
+    st.markdown("### Inicio de Sesión")
+
+    with st.form("login_form", clear_on_submit=False):
         username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
         password = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
-        submit_login = st.form_submit_button("Ingresar")
+        login_btn = st.form_submit_button("Ingresar")
 
-        if submit_login:
+        if login_btn:
             try:
                 conn = get_connection()
                 user = conn.execute(
@@ -319,11 +364,13 @@ def pantalla_login():
                 conn.close()
 
                 if user and check_password(password, user["contrasena"]):
+                    # Guardar sesión
                     sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
                     if user["maestroid"]:
                         sess["maestroid"] = int(user["maestroid"])
                     if user["matricula"]:
                         sess["matricula"] = int(user["matricula"])
+
                     st.session_state.usuario = sess
                     st.success(f"Bienvenido {user['nombreusuario']}")
                     st.rerun()
@@ -332,35 +379,37 @@ def pantalla_login():
             except Exception as e:
                 st.error(f"Error al iniciar sesión: {e}")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### Crear cuenta nueva")
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ==== REGISTRO ====
-    with st.form("registro_form"):
-        new_user = st.text_input("Nuevo usuario", placeholder="Ej. juan123")
-        new_pass = st.text_input("Nueva contraseña", type="password")
+    # ============================
+    # FORMULARIO DE REGISTRO
+    # ============================
+    st.markdown("### Crear nueva cuenta")
+
+    with st.form("register_form", clear_on_submit=False):
+        new_user = st.text_input("Nuevo usuario", placeholder="Ej. juan23")
+        new_pass = st.text_input("Nueva contraseña", type="password", placeholder="Debe ser segura")
         rol = st.selectbox("Rol", ["alumno", "maestro", "admin"])
+        reg_btn = st.form_submit_button("Registrar cuenta")
 
-        submit_reg = st.form_submit_button("Crear cuenta")
-
-        if submit_reg:
+        if reg_btn:
             if not new_user or not new_pass:
                 st.warning("Completa todos los campos.")
             else:
                 try:
-                    h = hash_password(new_pass)
+                    hashed = hash_password(new_pass)
                     conn = get_connection()
                     conn.execute(
                         text("INSERT INTO usuarios (nombreusuario, contrasena, rol) VALUES (:u, :p, :r)"),
-                        {"u": new_user, "p": h, "r": rol}
+                        {"u": new_user, "p": hashed, "r": rol}
                     )
                     conn.commit()
                     conn.close()
                     st.success("Cuenta creada correctamente.")
                 except Exception as e:
-                    st.error(f"No se pudo crear el usuario: {e}")
+                    st.error(f"No se pudo crear la cuenta: {e}")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
 # =========================
 # LOGOUT
@@ -1002,6 +1051,7 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
 
 
 
