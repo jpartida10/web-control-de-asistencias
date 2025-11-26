@@ -262,88 +262,145 @@ if "qr_token" in params:
 # =========================
 def pantalla_login():
 
-    # ===== ESTILOS DE DISEÑO PROFESIONAL =====
     st.markdown("""
         <style>
-
-        /* Fondo completo */
-        .main {
-            background: linear-gradient(135deg, #0d47a1 0%, #1976d2 50%, #42a5f5 100%);
-            height: 100vh !important;
+        /* FONDO */
+        .stApp {
+            background: linear-gradient(135deg, #0d47a1, #1565c0, #42a5f5);
+            height: 100vh;
         }
 
-        /* Centrado total */
-        .center-container {
+        /* CONTENEDOR CENTRADO */
+        .login-wrapper {
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 95vh;
+            height: 88vh;
         }
 
-        /* Tarjeta glass */
-        .glass-card {
+        /* TARJETA */
+        .login-card {
             width: 420px;
             padding: 35px;
-            border-radius: 18px;
-            background: rgba(255, 255, 255, 0.15);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+            border-radius: 15px;
+            background: rgba(255,255,255,0.13);
             backdrop-filter: blur(12px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.35);
             -webkit-backdrop-filter: blur(12px);
+        }
+
+        h1 {
             color: white;
-        }
-
-        .title {
             text-align: center;
-            font-size: 32px;
             font-weight: 900;
-            margin-bottom: -5px;
         }
 
-        .subtitle {
+        h3 {
+            color: white;
             text-align: center;
-            font-size: 14px;
-            color: #e3f2fd;
+            margin-top: -15px;
+            opacity: 0.85;
         }
 
-        .stTextInput label, .stSelectbox label {
+        label {
             color: white !important;
             font-weight: bold;
         }
 
-        .stButton>button {
+        .stButton button {
             width: 100%;
+            height: 45px;
+            border-radius: 8px;
             background-color: #1e88e5;
             color: white;
-            font-weight: bold;
-            border-radius: 8px;
-            height: 45px;
+            font-weight: 700;
             border: none;
         }
 
-        .stButton>button:hover {
+        .stButton button:hover {
             background-color: #1565c0;
-            color: white;
         }
 
         .divider {
+            margin: 20px 0;
             height: 1px;
-            background-color: rgba(255, 255, 255, 0.3);
-            margin: 25px 0;
+            background: rgba(255,255,255,0.3);
         }
 
         </style>
     """, unsafe_allow_html=True)
 
     # ===== CONTENEDOR CENTRADO =====
-    st.markdown('<div class="center-container">', unsafe_allow_html=True)
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+    st.markdown('<div class="login-wrapper">', unsafe_allow_html=True)
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
 
-    # ===== TÍTULO =====
-    st.markdown('<p class="title">🔐 Control de Asistencias</p>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Ingresa a tu cuenta para continuar</p>', unsafe_allow_html=True)
+    st.markdown("<h1>🔐 Control de Asistencias</h1>", unsafe_allow_html=True)
+    st.markdown("<h3>Inicia sesión o crea una cuenta</h3>", unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    # ============================
+    # LOGIN
+    # ============================
+    with st.form("form_login"):
+        st.subheader("Iniciar Sesión")
+        user = st.text_input("Usuario")
+        pwd = st.text_input("Contraseña", type="password")
+        login_btn = st.form_submit_button("Ingresar")
 
+        if login_btn:
+            try:
+                conn = get_connection()
+                u = conn.execute(
+                    text("SELECT * FROM usuarios WHERE nombreusuario = :u"),
+                    {"u": user}
+                ).mappings().fetchone()
+                conn.close()
+
+                if u and check_password(pwd, u["contrasena"]):
+                    sess = {"nombre": u["nombreusuario"], "rol": u["rol"]}
+
+                    if u["maestroid"]:
+                        sess["maestroid"] = int(u["maestroid"])
+                    if u["matricula"]:
+                        sess["matricula"] = int(u["matricula"])
+
+                    st.session_state.usuario = sess
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    # ============================
+    # REGISTRO
+    # ============================
+    with st.form("form_registro"):
+        st.subheader("Crear Cuenta Nueva")
+        new_user = st.text_input("Nuevo Usuario")
+        new_pass = st.text_input("Nueva Contraseña", type="password")
+        rol = st.selectbox("Rol", ["alumno", "maestro", "admin"])
+        reg_btn = st.form_submit_button("Registrar")
+
+        if reg_btn:
+            if not new_user or not new_pass:
+                st.warning("Completa todos los campos.")
+            else:
+                try:
+                    hashed = hash_password(new_pass)
+                    conn = get_connection()
+                    conn.execute(
+                        text("INSERT INTO usuarios (nombreusuario, contrasena, rol) VALUES (:u, :p, :r)"),
+                        {"u": new_user, "p": hashed, "r": rol}
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Cuenta creada correctamente.")
+                except Exception as e:
+                    st.error(f"No se pudo crear el usuario: {e}")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
     # ============================
     # FORMULARIO DE LOGIN
     # ============================
@@ -1051,6 +1108,7 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
 
 
 
