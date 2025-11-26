@@ -1,9 +1,3 @@
-# app.py (REEMPLAZAR totalmente con este contenido)
-# Proyecto: Control de Asistencias (integrado y completo)
-# Requisitos: streamlit, sqlalchemy, psycopg2-binary, bcrypt, plotly, streamlit-option-menu, qrcode, pillow
-# Ejemplo pip:
-# pip install streamlit sqlalchemy psycopg2-binary bcrypt plotly streamlit-option-menu qrcode pillow
-
 import streamlit as st
 import pandas as pd
 import sqlalchemy
@@ -26,9 +20,7 @@ st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout
 # =========================
 # CONFIG: Cambia si es necesario
 # =========================
-# Usa tu string de Neon/Postgres o local. Mantén sslmode si usas Neon.
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-# BASE_URL debe apuntar a la URL pública del frontend (Streamlit) para que los QR generados funcionen al escanear
 BASE_URL = "https://web-control-de-asistencias-6dfeqqhenqmcaisphdh4qu.streamlit.app/"
 
 # =========================
@@ -165,7 +157,7 @@ if "usuario" not in st.session_state:
     st.session_state.usuario = None
 
 # =========================
-# MODO QR: si llega ?qr_token=...
+# MODO QR:
 # =========================
 params = st.experimental_get_query_params()
 if "qr_token" in params:
@@ -991,3 +983,4 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
