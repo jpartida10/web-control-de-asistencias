@@ -18,7 +18,7 @@ import plotly.express as px
 st.set_page_config(page_title="Control de Asistencias", page_icon="📋", layout="wide")
 
 # =========================
-# CONFIG: Cambia si es necesario
+# CONFIG:
 # =========================
 DATABASE_URL = "postgresql://neondb_owner:npg_1f3sluIdFRyA@ep-solitary-meadow-adthlkqa-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 BASE_URL = "https://web-control-de-asistencias-6dfeqqhenqmcaisphdh4qu.streamlit.app/"
@@ -983,4 +983,5 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
 
