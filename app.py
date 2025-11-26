@@ -261,87 +261,106 @@ if "qr_token" in params:
 # PANTALLA LOGIN / REGISTRO NORMAL
 # =========================
 def pantalla_login():
-    st.title("🔐 Iniciar sesión - Control de Asistencias")
-    col1, col2 = st.columns(2)
 
-    with col1:
-        st.subheader("Iniciar sesión")
-        with st.form("login_form"):
-            username = st.text_input("Usuario")
-            password = st.text_input("Contraseña", type="password")
-            submit_login = st.form_submit_button("Ingresar")
-            if submit_login:
-                try:
-                    conn = get_connection()
-                    user = conn.execute(text("SELECT * FROM usuarios WHERE nombreusuario = :u"), {"u": username}).mappings().fetchone()
-                    conn.close()
-                    if user and check_password(password, user["contrasena"]):
-                        sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
-                        if user["maestroid"]:
-                            sess["maestroid"] = int(user["maestroid"])
-                        if user["matricula"]:
-                            sess["matricula"] = int(user["matricula"])
-                        st.session_state.usuario = sess
-                        st.success(f"Bienvenido {user['nombreusuario']}")
-                        st.rerun()
-                    else:
-                        st.error("Usuario o contraseña incorrectos.")
-                except Exception as e:
-                    st.error(f"Error al iniciar sesión: {e}")
+    # ==== Estilos modernos (glass + centrar) ====
+    st.markdown("""
+        <style>
+        body {
+            background: linear-gradient(135deg, #1a237e, #0d47a1);
+        }
+        .login-container {
+            margin: auto;
+            width: 420px;
+            padding: 30px;
+            margin-top: 80px;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }
+        .login-title {
+            text-align: center;
+            color: white;
+            font-size: 30px;
+            font-weight: 800;
+        }
+        .login-subtitle {
+            text-align: center;
+            color: #e0e0e0;
+            font-size: 14px;
+            margin-top: -10px;
+        }
+        .input-label {
+            color: white !important;
+            font-weight: 600;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-    with col2:
-        st.subheader("Crear cuenta")
-        with st.form("registro_form"):
-            new_user = st.text_input("Nombre de usuario")
-            new_pass = st.text_input("Contraseña", type="password")
-            rol = st.selectbox("Tipo de cuenta", ["alumno", "maestro", "admin"])
-            conn = get_connection()
-            maestros_df = pd.read_sql("SELECT maestroid, nombre, apellido FROM maestros ORDER BY nombre", conn)
-            alumnos_df = pd.read_sql("SELECT matricula, nombre, apellido FROM alumnos ORDER BY nombre", conn)
-            conn.close()
+    # === Contenedor glass ===
+    st.markdown('<div class="login-container">', unsafe_allow_html=True)
+    st.markdown('<p class="login-title">🔐 Sistema de Asistencias</p>', unsafe_allow_html=True)
+    st.markdown('<p class="login-subtitle">Ingresa para continuar</p>', unsafe_allow_html=True)
 
-            col_a, col_b = st.columns(2)
-            maestro_link = None
-            alumno_link = None
-            with col_a:
-                if rol == "maestro":
-                    if maestros_df.empty:
-                        st.info("No hay maestros registrados: crea el registro en la sección 'Maestros' después.")
-                    else:
-                        maestro_link = st.selectbox("Vincular a maestro existente (opcional)", ["-- Ninguno --"] + (maestros_df["nombre"] + " " + maestros_df["apellido"]).tolist())
-                        if maestro_link == "-- Ninguno --":
-                            maestro_link = None
-                elif rol == "alumno":
-                    if alumnos_df.empty:
-                        st.info("No hay alumnos registrados: crea el registro en la sección 'Alumnos' después.")
-                    else:
-                        alumno_link = st.selectbox("Vincular a alumno existente (opcional)", ["-- Ninguno --"] + (alumnos_df["nombre"] + " " + alumnos_df["apellido"]).tolist())
-                        if alumno_link == "-- Ninguno --":
-                            alumno_link = None
+    # ==== LOGIN ====
+    st.markdown("### Iniciar Sesión")
+    with st.form("login_form"):
+        username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+        password = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
+        submit_login = st.form_submit_button("Ingresar")
 
-            submit_reg = st.form_submit_button("Registrar cuenta")
-            if submit_reg:
-                if not new_user or not new_pass:
-                    st.warning("Completa todos los campos.")
+        if submit_login:
+            try:
+                conn = get_connection()
+                user = conn.execute(
+                    text("SELECT * FROM usuarios WHERE nombreusuario = :u"),
+                    {"u": username}
+                ).mappings().fetchone()
+                conn.close()
+
+                if user and check_password(password, user["contrasena"]):
+                    sess = {"nombre": user["nombreusuario"], "rol": user["rol"]}
+                    if user["maestroid"]:
+                        sess["maestroid"] = int(user["maestroid"])
+                    if user["matricula"]:
+                        sess["matricula"] = int(user["matricula"])
+                    st.session_state.usuario = sess
+                    st.success(f"Bienvenido {user['nombreusuario']}")
+                    st.rerun()
                 else:
-                    try:
-                        h = hash_password(new_pass)
-                        conn = get_connection()
-                        ma_id = None
-                        mat_id = None
-                        if rol == "maestro" and maestro_link:
-                            ma_id = int(maestros_df.loc[(maestros_df["nombre"] + " " + maestros_df["apellido"]) == maestro_link, "maestroid"].iloc[0])
-                        if rol == "alumno" and alumno_link:
-                            mat_id = int(alumnos_df.loc[(alumnos_df["nombre"] + " " + alumnos_df["apellido"]) == alumno_link, "matricula"].iloc[0])
-                        conn.execute(text("""
-                            INSERT INTO usuarios (nombreusuario, contrasena, rol, maestroid, matricula)
-                            VALUES (:u, :p, :r, :ma, :ma2)
-                        """), {"u": new_user, "p": h, "r": rol, "ma": ma_id, "ma2": mat_id})
-                        conn.commit()
-                        conn.close()
-                        st.success("Usuario registrado correctamente.")
-                    except Exception as e:
-                        st.error(f"No se pudo crear el usuario: {e}")
+                    st.error("Usuario o contraseña incorrectos.")
+            except Exception as e:
+                st.error(f"Error al iniciar sesión: {e}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### Crear cuenta nueva")
+
+    # ==== REGISTRO ====
+    with st.form("registro_form"):
+        new_user = st.text_input("Nuevo usuario", placeholder="Ej. juan123")
+        new_pass = st.text_input("Nueva contraseña", type="password")
+        rol = st.selectbox("Rol", ["alumno", "maestro", "admin"])
+
+        submit_reg = st.form_submit_button("Crear cuenta")
+
+        if submit_reg:
+            if not new_user or not new_pass:
+                st.warning("Completa todos los campos.")
+            else:
+                try:
+                    h = hash_password(new_pass)
+                    conn = get_connection()
+                    conn.execute(
+                        text("INSERT INTO usuarios (nombreusuario, contrasena, rol) VALUES (:u, :p, :r)"),
+                        {"u": new_user, "p": h, "r": rol}
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Cuenta creada correctamente.")
+                except Exception as e:
+                    st.error(f"No se pudo crear el usuario: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================
 # LOGOUT
@@ -983,5 +1002,6 @@ if st.session_state.usuario:
 
 else:
     pantalla_login()
+
 
 
